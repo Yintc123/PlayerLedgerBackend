@@ -1,0 +1,24 @@
+# Binary
+bootstrap
+*.exe
+*.out
+
+# Build artifacts
+deployment.zip
+
+# Environment
+.env
+.env.local
+
+# Vendor
+vendor/
+
+# Test cache
+*.test
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

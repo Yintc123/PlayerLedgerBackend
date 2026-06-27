@@ -2,6 +2,13 @@
 
 玩家儲值紀錄查詢工具的 API 伺服器，使用 Golang 建置。
 
+## 開發方法
+
+本專案採用 **SDD + TDD** 開發流程：
+
+- **SDD（Schema-Driven Development）**：以 API Schema（OpenAPI）為契約，前後端依此並行開發
+- **TDD（Test-Driven Development）**：先寫測試再實作，確保功能正確性與可維護性
+
 ## 技術棧
 
 - [Go](https://golang.org/)
