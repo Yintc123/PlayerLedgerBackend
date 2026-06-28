@@ -219,16 +219,15 @@ func TestCMSUserRepository_Create_DB錯誤_回傳包裝錯誤(t *testing.T) {
 func TestCMSUserRepository_FindByUsername_DB錯誤_回傳包裝錯誤(t *testing.T) {
 	db := WithTx(t)
 	repo := NewCMSUserRepository(db)
-	ctx := context.Background()
 
-	// 關閉數據庫連接以強制產生 DB 錯誤
-	sqlDB, err := db.DB()
-	require.NoError(t, err)
-	err = sqlDB.Close()
-	require.NoError(t, err)
+	// 用已取消的 context 強制 DB 查詢錯誤。
+	// 不可用 sqlDB.Close()：db.DB() 取得的是共享的 testDB 連線池，
+	// 關閉它會破壞同 package 其他測試的隔離（database is closed）。
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
 	// 執行
-	_, err = repo.FindByUsername(ctx, "test")
+	_, err := repo.FindByUsername(ctx, "test")
 
 	// 驗證
 	assert.Error(t, err)

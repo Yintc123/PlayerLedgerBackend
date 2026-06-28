@@ -32,9 +32,9 @@ type createDepositRequest struct {
 	Amount        int64   `json:"amount"         binding:"required,min=1"`
 	Currency      string  `json:"currency"       binding:"omitempty,len=3"`
 	PaymentMethod string  `json:"payment_method" binding:"required"`
-	InternalNote  *string `json:"internal_note"`
-	DisplayNote   *string `json:"display_note"`
-	ReferenceNo   *string `json:"reference_no"`
+	InternalNote  *string `json:"internal_note"  binding:"omitempty,max=2000"`
+	DisplayNote   *string `json:"display_note"   binding:"omitempty,max=500"`
+	ReferenceNo   *string `json:"reference_no"   binding:"omitempty,max=128"`
 }
 
 func (h *DepositHandler) Create(c *gin.Context) {
@@ -177,6 +177,9 @@ func (h *DepositHandler) List(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !validateDateRange(c, startDate, endDate) {
+		return
+	}
 
 	filter := repository.DepositRecordFilter{
 		PlayerID:      playerID,
@@ -248,35 +251,17 @@ func (h *DepositHandler) UpdateStatus(c *gin.Context) {
 		input.NewStatus = &ds
 	}
 
-	if v, ok := rawBody["internal_note"]; ok {
-		if string(v) == "null" {
-			var nilStr *string
-			input.InternalNote = &nilStr
-		} else {
-			var s string
-			if err := json.Unmarshal(v, &s); err != nil {
-				httpx.WriteError(c, http.StatusBadRequest, "invalid input")
-				return
-			}
-			sp := &s
-			input.InternalNote = &sp
-		}
+	internalNote, ok := parseTriStateNote(c, rawBody, "internal_note", 2000)
+	if !ok {
+		return
 	}
+	input.InternalNote = internalNote
 
-	if v, ok := rawBody["display_note"]; ok {
-		if string(v) == "null" {
-			var nilStr *string
-			input.DisplayNote = &nilStr
-		} else {
-			var s string
-			if err := json.Unmarshal(v, &s); err != nil {
-				httpx.WriteError(c, http.StatusBadRequest, "invalid input")
-				return
-			}
-			sp := &s
-			input.DisplayNote = &sp
-		}
+	displayNote, ok := parseTriStateNote(c, rawBody, "display_note", 500)
+	if !ok {
+		return
 	}
+	input.DisplayNote = displayNote
 
 	// 至少一個欄位必須提供
 	if input.NewStatus == nil && input.InternalNote == nil && input.DisplayNote == nil {
@@ -322,6 +307,9 @@ func (h *DepositHandler) ListMine(c *gin.Context) {
 	}
 	endDate, ok := parseDateQuery(c, "end_date", true)
 	if !ok {
+		return
+	}
+	if !validateDateRange(c, startDate, endDate) {
 		return
 	}
 
@@ -371,4 +359,44 @@ func parseDateQuery(c *gin.Context, key string, endOfDay bool) (*time.Time, bool
 		t = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC)
 	}
 	return &t, true
+}
+
+// validateDateRange 確保 end_date 不早於 start_date（§4.2）。
+// 兩者皆有值且 end < start 時回 false 並寫入 400；其餘情況回 true。
+func validateDateRange(c *gin.Context, start, end *time.Time) bool {
+	if start != nil && end != nil && end.Before(*start) {
+		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+		return false
+	}
+	return true
+}
+
+// parseTriStateNote 解析三態備註欄位（缺席 / null / 值）並驗證長度上限。
+// 回傳值對應 repository 三態語意：
+//
+//	nil           → 欄位缺席，不修改
+//	&(*string)nil → 明確 null，清空
+//	&&"text"      → 設定新值
+//
+// ok=false 時已寫入 400 回應（JSON 型別錯誤或超過長度上限）。
+func parseTriStateNote(c *gin.Context, raw map[string]json.RawMessage, key string, maxLen int) (**string, bool) {
+	v, present := raw[key]
+	if !present {
+		return nil, true
+	}
+	if string(v) == "null" {
+		var nilStr *string
+		return &nilStr, true
+	}
+	var s string
+	if err := json.Unmarshal(v, &s); err != nil {
+		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+		return nil, false
+	}
+	if len(s) > maxLen {
+		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+		return nil, false
+	}
+	sp := &s
+	return &sp, true
 }

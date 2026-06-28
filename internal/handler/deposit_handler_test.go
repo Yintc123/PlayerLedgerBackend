@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,8 +123,20 @@ func injectClaims(claims *pkgjwt.AccessClaims) gin.HandlerFunc {
 	}
 }
 
-// setupDepositCMSRouter 建立含 CMS claims 注入的測試 router。
+// setupDepositCMSRouter 以預設 admin 角色建立 router，涵蓋 happy path。
 func setupDepositCMSRouter(t *testing.T, svc service.DepositService) (*gin.Engine, string) {
+	t.Helper()
+	return setupDepositCMSRouterWithRole(t, svc, pkgjwt.RoleAdmin)
+}
+
+// setupDepositCMSRouterWithRole 以指定角色建立 router，掛上與 main.go 一致的 RequireRole 分權：
+//
+//	POST  → RequireRole(admin, user)
+//	PATCH → RequireRole(admin)
+//	GET   → 全 CMS staff（僅 RequireUserType，無 RequireRole）
+//
+// RequireUserType 在此略過（claims 已固定 utype=cms）；RBAC 焦點在角色層。
+func setupDepositCMSRouterWithRole(t *testing.T, svc service.DepositService, role pkgjwt.Role) (*gin.Engine, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	_ = logOnce
@@ -132,6 +145,7 @@ func setupDepositCMSRouter(t *testing.T, svc service.DepositService) (*gin.Engin
 	claims := &pkgjwt.AccessClaims{
 		RegisteredClaims: jwt.RegisteredClaims{Subject: operatorID},
 		UserType:         pkgjwt.UserTypeCMS,
+		Role:             role,
 	}
 
 	r := gin.New()
@@ -140,10 +154,10 @@ func setupDepositCMSRouter(t *testing.T, svc service.DepositService) (*gin.Engin
 
 	h := NewDepositHandler(svc)
 	cmsGroup := r.Group("/api/cms/deposit-records")
-	cmsGroup.POST("", h.Create)
+	cmsGroup.POST("", pkgjwt.RequireRole(pkgjwt.RoleAdmin, pkgjwt.RoleUser), h.Create)
 	cmsGroup.GET("", h.List)
 	cmsGroup.GET("/:id", h.Get)
-	cmsGroup.PATCH("/:id", h.UpdateStatus)
+	cmsGroup.PATCH("/:id", pkgjwt.RequireRole(pkgjwt.RoleAdmin), h.UpdateStatus)
 
 	return r, operatorID
 }
@@ -471,5 +485,129 @@ func TestDepositHandler_ListMine_PageSizeOver50_Returns400(t *testing.T) {
 	svc := newFakeDepositService()
 	r := setupDepositMemberRouter(t, svc, uuid.New().String())
 	w := doRequest(r, http.MethodGet, "/api/v1/me/deposit-records?page_size=51", nil)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// ─── RBAC：角色分權（§2 / §3 / §7）──────────────────────────────────────────
+
+// TestDepositHandler_Create_Viewer_Returns403 viewer 無建立權限
+func TestDepositHandler_Create_Viewer_Returns403(t *testing.T) {
+	svc := newFakeDepositService()
+	r, _ := setupDepositCMSRouterWithRole(t, svc, pkgjwt.RoleViewer)
+
+	body := map[string]any{
+		"player_id":      uuid.New().String(),
+		"amount":         100,
+		"payment_method": "manual",
+	}
+	w := doRequest(r, http.MethodPost, "/api/cms/deposit-records", body)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// TestDepositHandler_Create_User_Returns201 user 有建立權限
+func TestDepositHandler_Create_User_Returns201(t *testing.T) {
+	svc := newFakeDepositService()
+	r, _ := setupDepositCMSRouterWithRole(t, svc, pkgjwt.RoleUser)
+
+	body := map[string]any{
+		"player_id":      uuid.New().String(),
+		"amount":         100,
+		"payment_method": "manual",
+	}
+	w := doRequest(r, http.MethodPost, "/api/cms/deposit-records", body)
+	assert.Equal(t, http.StatusCreated, w.Code)
+}
+
+// TestDepositHandler_UpdateStatus_User_Returns403 PATCH 僅限 admin，user 不可
+func TestDepositHandler_UpdateStatus_User_Returns403(t *testing.T) {
+	svc := newFakeDepositService()
+	rec := seedFakeDeposit(svc, model.DepositStatusPending, uuid.New())
+	r, _ := setupDepositCMSRouterWithRole(t, svc, pkgjwt.RoleUser)
+
+	body := map[string]any{"status": "completed"}
+	w := doRequest(r, http.MethodPatch, "/api/cms/deposit-records/"+rec.ID.String(), body)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// TestDepositHandler_UpdateStatus_Viewer_Returns403 PATCH 僅限 admin，viewer 不可
+func TestDepositHandler_UpdateStatus_Viewer_Returns403(t *testing.T) {
+	svc := newFakeDepositService()
+	rec := seedFakeDeposit(svc, model.DepositStatusPending, uuid.New())
+	r, _ := setupDepositCMSRouterWithRole(t, svc, pkgjwt.RoleViewer)
+
+	body := map[string]any{"status": "completed"}
+	w := doRequest(r, http.MethodPatch, "/api/cms/deposit-records/"+rec.ID.String(), body)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// TestDepositHandler_List_Viewer_Returns200 GET 列表開放全 CMS staff（含 viewer）
+func TestDepositHandler_List_Viewer_Returns200(t *testing.T) {
+	svc := newFakeDepositService()
+	r, _ := setupDepositCMSRouterWithRole(t, svc, pkgjwt.RoleViewer)
+
+	w := doRequest(r, http.MethodGet, "/api/cms/deposit-records", nil)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// ─── 參數 / 欄位驗證（§4.1 / §4.2）─────────────────────────────────────────
+
+// TestDepositHandler_List_EndDateBeforeStartDate_Returns400（§4.2）
+func TestDepositHandler_List_EndDateBeforeStartDate_Returns400(t *testing.T) {
+	svc := newFakeDepositService()
+	r, _ := setupDepositCMSRouter(t, svc)
+
+	w := doRequest(r, http.MethodGet,
+		"/api/cms/deposit-records?start_date=2026-06-30&end_date=2026-06-01", nil)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestDepositHandler_ListMine_EndDateBeforeStartDate_Returns400（§4.5 → §4.2）
+func TestDepositHandler_ListMine_EndDateBeforeStartDate_Returns400(t *testing.T) {
+	svc := newFakeDepositService()
+	r := setupDepositMemberRouter(t, svc, uuid.New().String())
+
+	w := doRequest(r, http.MethodGet,
+		"/api/v1/me/deposit-records?start_date=2026-06-30&end_date=2026-06-01", nil)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestDepositHandler_Create_InternalNoteTooLong_Returns400（§4.1：上限 2000）
+func TestDepositHandler_Create_InternalNoteTooLong_Returns400(t *testing.T) {
+	svc := newFakeDepositService()
+	r, _ := setupDepositCMSRouter(t, svc)
+
+	body := map[string]any{
+		"player_id":      uuid.New().String(),
+		"amount":         100,
+		"payment_method": "manual",
+		"internal_note":  strings.Repeat("a", 2001),
+	}
+	w := doRequest(r, http.MethodPost, "/api/cms/deposit-records", body)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestDepositHandler_Create_DisplayNoteTooLong_Returns400（§4.1：上限 500）
+func TestDepositHandler_Create_DisplayNoteTooLong_Returns400(t *testing.T) {
+	svc := newFakeDepositService()
+	r, _ := setupDepositCMSRouter(t, svc)
+
+	body := map[string]any{
+		"player_id":      uuid.New().String(),
+		"amount":         100,
+		"payment_method": "manual",
+		"display_note":   strings.Repeat("a", 501),
+	}
+	w := doRequest(r, http.MethodPost, "/api/cms/deposit-records", body)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestDepositHandler_UpdateStatus_InternalNoteTooLong_Returns400（§4.4：上限 2000）
+func TestDepositHandler_UpdateStatus_InternalNoteTooLong_Returns400(t *testing.T) {
+	svc := newFakeDepositService()
+	rec := seedFakeDeposit(svc, model.DepositStatusPending, uuid.New())
+	r, _ := setupDepositCMSRouter(t, svc)
+
+	body := map[string]any{"internal_note": strings.Repeat("a", 2001)}
+	w := doRequest(r, http.MethodPatch, "/api/cms/deposit-records/"+rec.ID.String(), body)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }

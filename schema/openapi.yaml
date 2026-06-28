@@ -23,6 +23,8 @@ servers:
 tags:
   - name: auth
     description: 認證、token 換發、session 管理
+  - name: deposit-records
+    description: 儲值紀錄管理（CMS 後台 + 玩家自助查詢）
 
 security:
   - bearerAuth: []
@@ -299,6 +301,222 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  # =============================================================
+  # Deposit Records — CMS 端（無版本號，path-level servers 覆寫）
+  # 權限：utype == cms。POST 限 admin+user；PATCH 限 admin；GET 全 CMS staff。
+  # =============================================================
+  /cms/deposit-records:
+    servers:
+      - url: http://localhost:8080/api
+      - url: https://api.example.com/api
+    post:
+      tags: [deposit-records]
+      summary: 建立儲值紀錄（admin / user）
+      description: |
+        建立一筆儲值紀錄，初始 status 固定為 `pending`。
+        `player_name`（從 members 查）、`operator_id`（token）、`operator_ip`（ClientIP）由 server 填入，caller 不得指定。
+      operationId: createDepositRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDepositRequest'
+      responses:
+        '201':
+          description: 建立成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositRecordEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: player_id 不存在於 members 表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                not_found:
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: resource not found
+        '409':
+          description: reference_no 已被其他紀錄使用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                conflict:
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: resource already exists
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    get:
+      tags: [deposit-records]
+      summary: 列出儲值紀錄（全 CMS staff，分頁 + 篩選）
+      operationId: listDepositRecords
+      parameters:
+        - { name: page,           in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size,      in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: player_id,      in: query, schema: { type: string, format: uuid } }
+        - name: status
+          in: query
+          description: 可重複出現做 OR 篩選（?status=pending&status=failed）
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/DepositStatus'
+        - name: payment_method
+          in: query
+          description: 可重複出現做 OR 篩選
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/PaymentMethod'
+        - { name: start_date, in: query, schema: { type: string, format: date }, description: 'created_at >= start_date 00:00:00 UTC' }
+        - { name: end_date,   in: query, schema: { type: string, format: date }, description: 'created_at <= end_date 23:59:59 UTC；不可早於 start_date' }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [created_at, -created_at, amount, -amount]
+            default: -created_at
+      responses:
+        '200':
+          description: 查詢成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositRecordListEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /cms/deposit-records/{id}:
+    servers:
+      - url: http://localhost:8080/api
+      - url: https://api.example.com/api
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [deposit-records]
+      summary: 取單筆儲值紀錄（全 CMS staff）
+      operationId: getDepositRecord
+      responses:
+        '200':
+          description: 查詢成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositRecordEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    patch:
+      tags: [deposit-records]
+      summary: 更新狀態 / 備註（僅 admin）
+      description: |
+        備註欄位採**三態語意**：傳值=設定、傳 `null`=清空、欄位缺席=不修改。
+        至少需提供 `status`、`internal_note`、`display_note` 其中之一。
+        非法 status 轉換回 422 `invalid_transition`（合法轉換見 model §4）。
+        並發更新採 last-write-wins。
+      operationId: updateDepositRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDepositRequest'
+      responses:
+        '200':
+          description: 更新成功，回傳更新後 record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositRecordEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: 非法 status 轉換
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_transition:
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: invalid_transition
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  # =============================================================
+  # Deposit Records — 玩家端（走 /api/v1 global servers）
+  # 權限：utype == member；player_id 由 token claims.sub 決定，不可指定。
+  # =============================================================
+  /me/deposit-records:
+    get:
+      tags: [deposit-records]
+      summary: 玩家查自己的儲值紀錄
+      description: |
+        `player_id` 從 access token `claims.sub`（= `members.id`）自動取得，caller 不可指定，
+        確保資料隔離。固定按 `-created_at` 排序，不開放 sort 控制。
+      operationId: listMyDepositRecords
+      parameters:
+        - { name: page,       in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size,  in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 }, description: 上限 50（低於 CMS 端，降低大量拉取風險） }
+        - { name: start_date, in: query, schema: { type: string, format: date } }
+        - { name: end_date,   in: query, schema: { type: string, format: date }, description: 不可早於 start_date }
+      responses:
+        '200':
+          description: 查詢成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositRecordPublicListEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
 # =============================================================
 # Reusable components
 # =============================================================
@@ -482,6 +700,130 @@ components:
               items:
                 $ref: '#/components/schemas/SessionInfo'
 
+    # ---- 儲值紀錄 enum ----
+    DepositStatus:
+      type: string
+      enum: [pending, completed, failed, cancelled, refunded]
+      description: |
+        儲值狀態。狀態機：pending → {completed, failed, cancelled}；completed → refunded。
+        failed / cancelled / refunded 為終態。
+
+    PaymentMethod:
+      type: string
+      enum: [bank_transfer, credit_card, manual, convenience_store, e_wallet]
+
+    # ---- 儲值紀錄請求 ----
+    CreateDepositRequest:
+      type: object
+      required: [player_id, amount, payment_method]
+      properties:
+        player_id:
+          type: string
+          format: uuid
+          description: 必須存在於 members 表
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 正整數；單位為幣別最小單位（TWD：元）
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          default: TWD
+          description: 預設 TWD；3 字元 ISO 4217
+        payment_method:
+          $ref: '#/components/schemas/PaymentMethod'
+        internal_note:
+          type: string
+          maxLength: 2000
+          description: staff 內部備註，不對玩家顯示
+        display_note:
+          type: string
+          maxLength: 500
+          description: 對玩家顯示的說明
+        reference_no:
+          type: string
+          maxLength: 128
+          description: 金流商外部交易號；若提供，系統檢查唯一性
+      additionalProperties: false
+
+    UpdateDepositRequest:
+      type: object
+      description: |
+        至少需提供一個欄位。備註欄位三態語意：傳值=設定、`null`=清空、缺席=不修改。
+      properties:
+        status:
+          $ref: '#/components/schemas/DepositStatus'
+        internal_note:
+          type: [string, 'null']
+          maxLength: 2000
+        display_note:
+          type: [string, 'null']
+          maxLength: 500
+      additionalProperties: false
+
+    # ---- 儲值紀錄回應 ----
+    DepositRecord:
+      type: object
+      required: [id, player_id, player_name, amount, currency, status, payment_method, created_at, updated_at]
+      properties:
+        id:             { type: string, format: uuid }
+        player_id:      { type: string, format: uuid }
+        player_name:    { type: string }
+        amount:         { type: integer, format: int64 }
+        currency:       { type: string }
+        status:         { $ref: '#/components/schemas/DepositStatus' }
+        payment_method: { $ref: '#/components/schemas/PaymentMethod' }
+        operator_id:    { type: string, format: uuid }
+        operator_ip:    { type: string }
+        internal_note:  { type: string }
+        display_note:   { type: string }
+        reference_no:   { type: string }
+        created_at:     { type: string, format: date-time }
+        updated_at:     { type: string, format: date-time }
+
+    DepositRecordPublic:
+      type: object
+      description: 玩家端；不暴露 operator_*、internal_note、reference_no、player_id、player_name
+      required: [id, amount, currency, status, payment_method, created_at]
+      properties:
+        id:             { type: string, format: uuid }
+        amount:         { type: integer, format: int64 }
+        currency:       { type: string }
+        status:         { $ref: '#/components/schemas/DepositStatus' }
+        payment_method: { $ref: '#/components/schemas/PaymentMethod' }
+        display_note:   { type: string }
+        created_at:     { type: string, format: date-time }
+
+    DepositRecordEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/DepositRecord'
+
+    DepositRecordListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/DepositRecord'
+
+    DepositRecordPublicListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/DepositRecordPublic'
+
     # ---- 通用錯誤回應 ----
     ErrorResponse:
       type: object
@@ -553,6 +895,19 @@ components:
                 success: false
                 request_id: 0193b3f4-1234-7abc-9def-0123456789ab
                 error: unauthorized
+
+    Forbidden:
+      description: 已登入但權限不足（角色或 user type 不符）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            forbidden:
+              value:
+                success: false
+                request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                error: forbidden
 
     NotFound:
       description: 資源不存在

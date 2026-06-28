@@ -250,15 +250,18 @@ func main() {
 		memberDepositGroup.GET("/deposit-records", depositHandler.ListMine)
 	}
 
-	// CMS endpoints（/api/cms/*）— AuthMiddleware + RequireUserType(cms)
+	// CMS endpoints（/api/cms/*）— AuthMiddleware + RequireUserType(cms) + per-route RequireRole（§2 / §3）
+	//   POST   建立 → admin, user
+	//   GET     查詢 → 全 CMS staff（admin, user, viewer）
+	//   PATCH  改狀態/備註 → admin only
 	cmsGroup := router.Group("/api/cms").
 		Use(jwt.AuthMiddleware(jwtManager, blacklist, userRevoke)).
 		Use(jwt.RequireUserType(jwt.UserTypeCMS))
 	{
-		cmsGroup.POST("/deposit-records", depositHandler.Create)
+		cmsGroup.POST("/deposit-records", jwt.RequireRole(jwt.RoleAdmin, jwt.RoleUser), depositHandler.Create)
 		cmsGroup.GET("/deposit-records", depositHandler.List)
 		cmsGroup.GET("/deposit-records/:id", depositHandler.Get)
-		cmsGroup.PATCH("/deposit-records/:id", depositHandler.UpdateStatus)
+		cmsGroup.PATCH("/deposit-records/:id", jwt.RequireRole(jwt.RoleAdmin), depositHandler.UpdateStatus)
 	}
 
 	// ═══════════════════════════════════════════════════════
