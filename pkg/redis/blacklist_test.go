@@ -462,10 +462,17 @@ func TestAccessTokenBlacklistAdd_SameJTITwice_Overwrites(t *testing.T) {
 
 // BenchmarkAccessTokenBlacklistAdd_Throughput 性能基准：Add 吞吐量
 func BenchmarkAccessTokenBlacklistAdd_Throughput(b *testing.B) {
-	client := newTestRedisClient(t)
+	client := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: os.Getenv("REDIS_PASSWORD"),
+	})
 	defer client.Close()
 
 	ctx := context.Background()
+	if err := client.Ping(ctx).Err(); err != nil {
+		b.Skipf("Redis unavailable: %v", err)
+	}
+
 	blacklist := NewAccessTokenBlacklist(client)
 
 	b.ReportAllocs()
@@ -479,10 +486,17 @@ func BenchmarkAccessTokenBlacklistAdd_Throughput(b *testing.B) {
 
 // BenchmarkAccessTokenBlacklistIsBlacklisted_Throughput 性能基准：IsBlacklisted 吞吐量
 func BenchmarkAccessTokenBlacklistIsBlacklisted_Throughput(b *testing.B) {
-	client := newTestRedisClient(t)
+	client := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: os.Getenv("REDIS_PASSWORD"),
+	})
 	defer client.Close()
 
 	ctx := context.Background()
+	if err := client.Ping(ctx).Err(); err != nil {
+		b.Skipf("Redis unavailable: %v", err)
+	}
+
 	blacklist := NewAccessTokenBlacklist(client)
 
 	// 预加载一个 JTI
