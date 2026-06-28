@@ -23,6 +23,17 @@ type AccessTokenBlacklist interface {
 	IsBlacklisted(ctx context.Context, jti string) (bool, error)
 }
 
+// UserRevocationStore user-level revoke watermark 接口（§7.5）。
+// 與 AccessTokenBlacklist 互補：blacklist 是「caller 知道 jti」的精準撤銷；本介面是
+// 「caller 不知道任何 jti」的整 user 廢票（admin 改 role / 軟刪除等）。
+// AuthMiddleware verify 成功後比對 claims.iat < watermark 即視為 invalid。
+//
+// 本地以 interface 形式重新宣告（同 AccessTokenBlacklist），避免 pkg/jwt → pkg/redis 依賴。
+type UserRevocationStore interface {
+	Revoke(ctx context.Context, userID string, ttl time.Duration) error
+	RevokedAfter(ctx context.Context, userID string) (int64, error)
+}
+
 // AuthMiddleware 驗證 access token，將 claims 注入 context（透過 SetClaims）。
 // blacklist 為「強制踢人」用的短期黑名單，非常態查詢；hot path 預期黑名單 miss。
 //
@@ -38,8 +49,13 @@ type AccessTokenBlacklist interface {
 //     - (true, nil)  → 401 `session_revoked`（middleware 內直接寫 error code，不過 HandleError；見 §12.4）
 //     - (false, nil) → 通過
 //     - (false, err) → **fail-open**：log warn + metrics.AuthBlacklistErrors.Inc() + 通過
+//  3.5. userRevoke.RevokedAfter(claims.Subject)（§7.5，v1.11 新增）：
+//     - (0, nil)                                  → 通過（user 從未被 revoke）
+//     - (ts, nil) 且 claims.IssuedAt < ts         → 401 `session_revoked`（admin 強制踢人後簽出的舊 token）
+//     - (ts, nil) 且 claims.IssuedAt >= ts        → 通過（revoke 之後簽的 token，視為合法）
+//     - (0, err)                                  → **fail-open**：log warn + metrics.AuthUserRevokeErrors.Inc() + 通過
 //  4. SetClaims(c, claims) + c.Next()
-func AuthMiddleware(jwtManager Manager, blacklist AccessTokenBlacklist) gin.HandlerFunc {
+func AuthMiddleware(jwtManager Manager, blacklist AccessTokenBlacklist, userRevoke UserRevocationStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 步驟 1：取 Authorization header
 		authHeader := c.GetHeader("Authorization")
@@ -92,6 +108,21 @@ func AuthMiddleware(jwtManager Manager, blacklist AccessTokenBlacklist) gin.Hand
 			metrics.AuthBlacklistErrors.Inc()
 		} else if hit {
 			// 黑名單命中：強制踢人（見 §12.4）
+			httpx.WriteError(c, http.StatusUnauthorized, "session_revoked")
+			c.Abort()
+			return
+		}
+
+		// 步驟 3.5：user-level revoke watermark（fail-open，§7.5）
+		watermark, err := userRevoke.RevokedAfter(c.Request.Context(), claims.UserID())
+		if err != nil {
+			logger.L().Warn("user-revoke check failed, allowing request",
+				zap.String("request_id", logger.GetRequestID(c)),
+				zap.Error(err),
+			)
+			metrics.AuthUserRevokeErrors.Inc()
+		} else if watermark > 0 && claims.IssuedAt != nil && claims.IssuedAt.Time.Unix() < watermark {
+			// admin 強制踢人後簽出的舊 token（見 §12.4，與 blacklist hit 共用 session_revoked 不區分原因）
 			httpx.WriteError(c, http.StatusUnauthorized, "session_revoked")
 			c.Abort()
 			return

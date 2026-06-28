@@ -144,6 +144,7 @@ func main() {
 	memberRepo := repository.NewMemberRepository(db)
 	bcryptHasher := hasher.NewBcryptHasher(cfg.JWT.BcryptCost)
 	blacklist := redis.NewAccessTokenBlacklist(redisClient)
+	userRevoke := redis.NewUserRevocationStore(redisClient)
 
 	// Seed super admin（取代規格 §13.5 原 SQL migration；改由 ADMIN_USERNAME/ADMIN_PASSWORD env 注入）
 	created, err := service.EnsureAdminFromConfig(
@@ -224,7 +225,7 @@ func main() {
 		authGroup.POST("/refresh", authHandler.Refresh)
 
 		// 需要 auth 的 endpoints — AuthMiddleware + User 層限流
-		authGroupAuth := authGroup.Group("").Use(jwt.AuthMiddleware(jwtManager, blacklist))
+		authGroupAuth := authGroup.Group("").Use(jwt.AuthMiddleware(jwtManager, blacklist, userRevoke))
 		if limiterStore != nil && cfg.RateLimit.Enabled {
 			authGroupAuth.Use(ratelimit.UserMiddleware(cfg.RateLimit.UserPeriod, cfg.RateLimit.UserLimit, limiterStore))
 		}

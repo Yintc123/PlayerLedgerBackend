@@ -76,6 +76,20 @@ var (
 		},
 	)
 
+	AuthUserRevokeErrors = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "auth_user_revoke_errors_total",
+			Help: "Errors querying user-revocation watermark in AuthMiddleware (fail-open path, §7.5 / §8.5)",
+		},
+	)
+
+	AuditWriteErrors = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "audit_write_errors_total",
+			Help: "Audit log primary-sink write failures that triggered stderr fallback (§18.3.1)",
+		},
+	)
+
 	// BuildInfo 使用正確名稱 app_build_info 及正確 labels（§18.2）。
 	BuildInfo = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -98,6 +112,8 @@ func Init(sqlDB *sql.DB, version, commit string) {
 		AuthRotations,
 		AuthReplayDetected,
 		AuthBlacklistErrors,
+		AuthUserRevokeErrors,
+		AuditWriteErrors,
 		BuildInfo,
 		collectors.NewBuildInfoCollector(),
 	)

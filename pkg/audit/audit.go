@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/yintengching/playerledger/pkg/ctxkey"
+	"github.com/yintengching/playerledger/pkg/metrics"
 )
 
 // EventType 安全事件類型（§18.3.2）
@@ -57,6 +58,7 @@ type fallbackSyncer struct {
 func (f *fallbackSyncer) Write(bs []byte) (int, error) {
 	n, err := f.primary.Write(bs)
 	if err != nil {
+		metrics.AuditWriteErrors.Inc()
 		_, _ = f.fallback.Write(bs) // best-effort fallback
 	}
 	return n, err
