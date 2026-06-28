@@ -250,15 +250,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("REDIS_POOL_SIZE", 10)
 
 	v.SetDefault("JWT_ISSUER", "playerledger")
-	v.SetDefault("JWT_ACCESS_TTL", 900)  // 15m
+	v.SetDefault("JWT_ACCESS_TTL", 900) // 15m
 	v.SetDefault("JWT_GRACE_WINDOW", 10)
 	v.SetDefault("JWT_CLOCK_SKEW_LEEWAY", 30)
-	v.SetDefault("JWT_CLIENT_POLICIES.cms-web.REFRESH_TTL", 3600)    // 1h
-	v.SetDefault("JWT_CLIENT_POLICIES.cms-web.ABSOLUTE_TTL", 28800)  // 8h
+	v.SetDefault("JWT_CLIENT_POLICIES.cms-web.REFRESH_TTL", 3600)   // 1h
+	v.SetDefault("JWT_CLIENT_POLICIES.cms-web.ABSOLUTE_TTL", 28800) // 8h
 	v.SetDefault("JWT_CLIENT_POLICIES.public-web.REFRESH_TTL", 3600)
-	v.SetDefault("JWT_CLIENT_POLICIES.public-web.ABSOLUTE_TTL", 86400)   // 24h
-	v.SetDefault("JWT_CLIENT_POLICIES.ios-app.REFRESH_TTL", 2592000)     // 720h = 30d
-	v.SetDefault("JWT_CLIENT_POLICIES.ios-app.ABSOLUTE_TTL", 15552000)   // 4320h = 180d
+	v.SetDefault("JWT_CLIENT_POLICIES.public-web.ABSOLUTE_TTL", 86400) // 24h
+	v.SetDefault("JWT_CLIENT_POLICIES.ios-app.REFRESH_TTL", 2592000)   // 720h = 30d
+	v.SetDefault("JWT_CLIENT_POLICIES.ios-app.ABSOLUTE_TTL", 15552000) // 4320h = 180d
 	v.SetDefault("JWT_CLIENT_POLICIES.android-app.REFRESH_TTL", 2592000)
 	v.SetDefault("JWT_CLIENT_POLICIES.android-app.ABSOLUTE_TTL", 15552000)
 	v.SetDefault("BCRYPT_COST", 12)

@@ -18,7 +18,7 @@ func TestFakeCMSUserRepository_FindByUsername_存在_回傳用戶(t *testing.T) 
 
 	// 準備
 	user := &model.CMSUser{
-		Base: model.Base{ID: uuid.New()},
+		Base:         model.Base{ID: uuid.New()},
 		Username:     "fakeuser",
 		PasswordHash: "$2a$12$fakehash",
 		Role:         "user",
@@ -58,7 +58,7 @@ func TestFakeCMSUserRepository_Create_成功_新增用戶(t *testing.T) {
 
 	// 準備
 	user := &model.CMSUser{
-		Base: model.Base{ID: uuid.New()},
+		Base:         model.Base{ID: uuid.New()},
 		Username:     "newuser",
 		PasswordHash: "$2a$12$newhash",
 		Role:         "admin",
@@ -82,7 +82,7 @@ func TestFakeCMSUserRepository_Create_用戶名已存在_回傳ErrConflict(t *te
 
 	// 準備
 	user1 := &model.CMSUser{
-		Base: model.Base{ID: uuid.New()},
+		Base:         model.Base{ID: uuid.New()},
 		Username:     "duplicate",
 		PasswordHash: "$2a$12$hash1",
 		Role:         "user",
@@ -92,7 +92,7 @@ func TestFakeCMSUserRepository_Create_用戶名已存在_回傳ErrConflict(t *te
 
 	// 執行
 	user2 := &model.CMSUser{
-		Base: model.Base{ID: uuid.New()},
+		Base:         model.Base{ID: uuid.New()},
 		Username:     "duplicate",
 		PasswordHash: "$2a$12$hash2",
 		Role:         "admin",
@@ -111,7 +111,7 @@ func TestFakeMemberRepository_FindByUsername_存在_回傳會員(t *testing.T) {
 
 	// 準備
 	member := &model.Member{
-		Base: model.Base{ID: uuid.New()},
+		Base:         model.Base{ID: uuid.New()},
 		Username:     "fakeplayer",
 		PasswordHash: "$2a$12$playerhash",
 	}

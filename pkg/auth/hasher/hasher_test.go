@@ -148,7 +148,7 @@ func TestErrMismatch_Sentinel(t *testing.T) {
 func TestBcryptHasher_NewBcryptHasher_ReturnsHasher(t *testing.T) {
 	h := NewBcryptHasher(12)
 	assert.NotNil(t, h)
-	var _ Hasher = h
+	// NewBcryptHasher 簽名已宣告回傳 Hasher，編譯期即強制；無需 var _ Hasher = h 冗餘斷言。
 }
 
 func TestBcryptHasher_WhitespacePassword(t *testing.T) {

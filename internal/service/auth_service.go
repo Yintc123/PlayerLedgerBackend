@@ -69,8 +69,8 @@ type TokenPair struct {
 	AccessToken      string `json:"access_token"`
 	RefreshToken     string `json:"refresh_token"`
 	TokenType        string `json:"token_type"`
-	ExpiresIn        int    `json:"expires_in"`          // access TTL 秒（§3.5.1）
-	RefreshExpiresIn int    `json:"refresh_expires_in"`  // refresh TTL 秒
+	ExpiresIn        int    `json:"expires_in"`         // access TTL 秒（§3.5.1）
+	RefreshExpiresIn int    `json:"refresh_expires_in"` // refresh TTL 秒
 }
 
 // SessionInfo 會話資訊（GET /auth/sessions 回傳，§3.5.1 SessionInfo schema）。
@@ -130,7 +130,7 @@ func isWeakPassword(password string) bool {
 	}
 	hasLetter := regexp.MustCompile(`[a-zA-Z]`).MatchString(password)
 	hasDigit := regexp.MustCompile(`[0-9]`).MatchString(password)
-	return !(hasLetter && hasDigit)
+	return !hasLetter || !hasDigit
 }
 
 // Register 建立 CMS user，預設 role = "user"（§8.9）。

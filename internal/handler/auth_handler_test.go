@@ -250,7 +250,7 @@ func TestAuthHandler_Register_Success(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewReader(bodyBytes))
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/register", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -270,7 +270,7 @@ func TestAuthHandler_Register_InvalidClient(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewReader(bodyBytes))
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/register", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -287,13 +287,13 @@ func TestAuthHandler_Register_WeakPassword(t *testing.T) {
 
 	body := map[string]string{
 		"username":  "testuser",
-		"password":  "onlyletters",  // ≥8 字符但無數字 → 服務層弱密碼檢查 → 422
+		"password":  "onlyletters", // ≥8 字符但無數字 → 服務層弱密碼檢查 → 422
 		"client_id": "cms-web",
 	}
 	bodyBytes, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewReader(bodyBytes))
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/register", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -316,7 +316,7 @@ func TestAuthHandler_Register_UsernameTaken(t *testing.T) {
 	}
 	bodyBytes1, _ := json.Marshal(body1)
 	w1 := httptest.NewRecorder()
-	req1, _ := http.NewRequest("POST", "/auth/register", bytes.NewReader(bodyBytes1))
+	req1, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/register", bytes.NewReader(bodyBytes1))
 	req1.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w1, req1)
 	require.Equal(t, http.StatusCreated, w1.Code)
@@ -329,7 +329,7 @@ func TestAuthHandler_Register_UsernameTaken(t *testing.T) {
 	}
 	bodyBytes2, _ := json.Marshal(body2)
 	w2 := httptest.NewRecorder()
-	req2, _ := http.NewRequest("POST", "/auth/register", bytes.NewReader(bodyBytes2))
+	req2, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/register", bytes.NewReader(bodyBytes2))
 	req2.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w2, req2)
 
@@ -351,7 +351,7 @@ func TestAuthHandler_Register_InvalidInput(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewReader(bodyBytes))
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/register", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -374,7 +374,7 @@ func TestAuthHandler_Login_Success_CMSUser(t *testing.T) {
 	}
 	registerBytes, _ := json.Marshal(registerBody)
 	w1 := httptest.NewRecorder()
-	req1, _ := http.NewRequest("POST", "/auth/register", bytes.NewReader(registerBytes))
+	req1, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/register", bytes.NewReader(registerBytes))
 	req1.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w1, req1)
 	require.Equal(t, http.StatusCreated, w1.Code)
@@ -387,7 +387,7 @@ func TestAuthHandler_Login_Success_CMSUser(t *testing.T) {
 	}
 	loginBytes, _ := json.Marshal(loginBody)
 	w2 := httptest.NewRecorder()
-	req2, _ := http.NewRequest("POST", "/auth/login", bytes.NewReader(loginBytes))
+	req2, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/login", bytes.NewReader(loginBytes))
 	req2.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w2, req2)
 
@@ -416,7 +416,7 @@ func TestAuthHandler_Login_InvalidCredentials(t *testing.T) {
 	}
 	registerBytes, _ := json.Marshal(registerBody)
 	w1 := httptest.NewRecorder()
-	req1, _ := http.NewRequest("POST", "/auth/register", bytes.NewReader(registerBytes))
+	req1, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/register", bytes.NewReader(registerBytes))
 	req1.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w1, req1)
 	require.Equal(t, http.StatusCreated, w1.Code)
@@ -429,7 +429,7 @@ func TestAuthHandler_Login_InvalidCredentials(t *testing.T) {
 	}
 	loginBytes, _ := json.Marshal(loginBody)
 	w2 := httptest.NewRecorder()
-	req2, _ := http.NewRequest("POST", "/auth/login", bytes.NewReader(loginBytes))
+	req2, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/login", bytes.NewReader(loginBytes))
 	req2.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w2, req2)
 
@@ -452,7 +452,7 @@ func TestAuthHandler_Login_UserNotFound(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/auth/login", bytes.NewReader(bodyBytes))
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/login", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -475,7 +475,7 @@ func TestAuthHandler_Login_InvalidClient(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/auth/login", bytes.NewReader(bodyBytes))
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/login", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -498,7 +498,7 @@ func TestAuthHandler_ResponseEnvelope(t *testing.T) {
 	bodyBytes, _ := json.Marshal(registerBody)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewReader(bodyBytes))
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/register", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Request-ID", "test-request-id-123")
 	router.ServeHTTP(w, req)
@@ -518,7 +518,7 @@ func TestAuthHandler_ErrorResponseEnvelope(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewReader(bodyBytes))
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/register", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Request-ID", "test-request-id-456")
 	router.ServeHTTP(w, req)
@@ -538,7 +538,7 @@ func TestAuthHandler_Logout_MissingAuth(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/auth/logout", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/logout", nil)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -555,7 +555,7 @@ func TestAuthHandler_ListSessions_MissingAuth(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/auth/sessions", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), "GET", "/auth/sessions", nil)
 	router.ServeHTTP(w, req)
 
 	// 缺少 auth header
@@ -571,7 +571,7 @@ func TestAuthHandler_RevokeSession_MissingAuth(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/auth/sessions/some-fid", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), "DELETE", "/auth/sessions/some-fid", nil)
 	router.ServeHTTP(w, req)
 
 	// 缺少 auth header
@@ -587,7 +587,7 @@ func TestAuthHandler_RevokeAllSessions_MissingAuth(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/auth/sessions/revoke-all", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", "/auth/sessions/revoke-all", nil)
 	router.ServeHTTP(w, req)
 
 	// 缺少 auth header

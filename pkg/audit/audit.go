@@ -30,8 +30,8 @@ const (
 // Extra 給事件特有欄位用，例如 replay_detected 帶 {presented_jti, current_jti, delta_sec}。
 type AuthEvent struct {
 	Type      EventType
-	UserID    string         // actor；未登入事件（如 login_failed）可空
-	FamilyID  string         // 事件涉及的 family（若有）
+	UserID    string // actor；未登入事件（如 login_failed）可空
+	FamilyID  string // 事件涉及的 family（若有）
 	ClientID  string
 	IP        string
 	UserAgent string
@@ -142,4 +142,4 @@ type nopLogger struct{}
 func NewNopLogger() Logger { return &nopLogger{} }
 
 func (n *nopLogger) Log(_ context.Context, _ AuthEvent) {}
-func (n *nopLogger) Sync() error                         { return nil }
+func (n *nopLogger) Sync() error                        { return nil }

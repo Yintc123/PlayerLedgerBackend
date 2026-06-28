@@ -27,18 +27,18 @@ type AccessTokenBlacklist interface {
 // blacklist 為「強制踢人」用的短期黑名單，非常態查詢；hot path 預期黑名單 miss。
 //
 // 處理流程：
-//   1. 從 Authorization header 取 "Bearer <token>"
-//      - 規範化：去除前後空白；prefix 比對「Bearer 」case-insensitive，僅接受單一空白
-//      - header 缺 / 前綴錯 / token 部分為空 → 401 `unauthorized`
-//   2. jwtManager.VerifyAccess(token) — 依錯誤 sentinel 對應 HTTP error code：
-//      - ErrTokenExpired                       → 401 `token_expired`   （前端 retry refresh）
-//      - ErrInvalidToken（含 alg/iss/aud/簽章/nbf/iat）→ 401 `invalid_token`   （前端走 login）
-//      - 其他不預期 error                       → 401 `unauthorized`
-//   3. blacklist.IsBlacklisted(ctx, claims.ID):
-//      - (true, nil)  → 401 `session_revoked`（middleware 內直接寫 error code，不過 HandleError；見 §12.4）
-//      - (false, nil) → 通過
-//      - (false, err) → **fail-open**：log warn + metrics.AuthBlacklistErrors.Inc() + 通過
-//   4. SetClaims(c, claims) + c.Next()
+//  1. 從 Authorization header 取 "Bearer <token>"
+//     - 規範化：去除前後空白；prefix 比對「Bearer 」case-insensitive，僅接受單一空白
+//     - header 缺 / 前綴錯 / token 部分為空 → 401 `unauthorized`
+//  2. jwtManager.VerifyAccess(token) — 依錯誤 sentinel 對應 HTTP error code：
+//     - ErrTokenExpired                       → 401 `token_expired`   （前端 retry refresh）
+//     - ErrInvalidToken（含 alg/iss/aud/簽章/nbf/iat）→ 401 `invalid_token`   （前端走 login）
+//     - 其他不預期 error                       → 401 `unauthorized`
+//  3. blacklist.IsBlacklisted(ctx, claims.ID):
+//     - (true, nil)  → 401 `session_revoked`（middleware 內直接寫 error code，不過 HandleError；見 §12.4）
+//     - (false, nil) → 通過
+//     - (false, err) → **fail-open**：log warn + metrics.AuthBlacklistErrors.Inc() + 通過
+//  4. SetClaims(c, claims) + c.Next()
 func AuthMiddleware(jwtManager Manager, blacklist AccessTokenBlacklist) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 步驟 1：取 Authorization header
@@ -68,11 +68,12 @@ func AuthMiddleware(jwtManager Manager, blacklist AccessTokenBlacklist) gin.Hand
 		claims, err := jwtManager.VerifyAccess(c.Request.Context(), token)
 		var errCode string
 		if err != nil {
-			if errors.Is(err, ErrTokenExpired) {
+			switch {
+			case errors.Is(err, ErrTokenExpired):
 				errCode = "token_expired"
-			} else if errors.Is(err, ErrInvalidToken) {
+			case errors.Is(err, ErrInvalidToken):
 				errCode = "invalid_token"
-			} else {
+			default:
 				errCode = "unauthorized"
 			}
 			httpx.WriteError(c, http.StatusUnauthorized, errCode)
@@ -105,9 +106,9 @@ func AuthMiddleware(jwtManager Manager, blacklist AccessTokenBlacklist) gin.Hand
 // RequireRole 驗證 token role 是否符合，需接在 AuthMiddleware 之後。
 //
 // 注意：
-// 1. 不呼叫 HandleError（internal/handler），以避免 pkg/jwt ↔ internal/handler 循環依賴。
-//    直接內嵌 401 / 403 回應格式。
-// 2. 使用 GetClaims（typed accessor），避免字串 key 散落。
+//  1. 不呼叫 HandleError（internal/handler），以避免 pkg/jwt ↔ internal/handler 循環依賴。
+//     直接內嵌 401 / 403 回應格式。
+//  2. 使用 GetClaims（typed accessor），避免字串 key 散落。
 func RequireRole(roles ...Role) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, ok := GetClaims(c)

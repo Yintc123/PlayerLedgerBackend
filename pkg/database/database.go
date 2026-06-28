@@ -22,7 +22,7 @@ func Connect(cfg config.DatabaseConfig) (*gorm.DB, error) {
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		PrepareStmt: cfg.PrepareStmt, // 直连 PG = true；走 PgBouncer transaction mode 必须 false
-		Logger:      newGormLogger(),  // zapgorm2 包裝全域 zap logger
+		Logger:      newGormLogger(), // zapgorm2 包裝全域 zap logger
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gorm open: %w", err)

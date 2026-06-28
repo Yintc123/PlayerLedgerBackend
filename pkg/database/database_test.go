@@ -148,7 +148,7 @@ func TestConnect_PrepareStmt_Configuration(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name       string
+		name        string
 		prepareStmt bool
 	}{
 		{"with PrepareStmt enabled", true},

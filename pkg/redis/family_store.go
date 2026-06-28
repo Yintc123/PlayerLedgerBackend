@@ -38,17 +38,17 @@ const (
 type FamilyState struct {
 	UserID                string `json:"user_id"`
 	FamilyID              string `json:"fid"`
-	ClientID              string `json:"client_id"`               // = aud claim
-	UserType              string `json:"utype"`                   // login 时固化；GraceHit / Rotated 重签 access 用
-	Role                  string `json:"role"`                    // login 时固化；同上
+	ClientID              string `json:"client_id"` // = aud claim
+	UserType              string `json:"utype"`     // login 时固化；GraceHit / Rotated 重签 access 用
+	Role                  string `json:"role"`      // login 时固化；同上
 	CurrentJTI            string `json:"current_jti"`
-	PreviousJTI           string `json:"previous_jti,omitempty"`             // grace window 用
-	PreviousResponseUntil int64  `json:"previous_response_until,omitempty"`  // unix seconds；grace 截止
-	AbsoluteExp           int64  `json:"abs_exp"`                            // unix seconds；rotation 不延长
-	DeviceLabel           string `json:"device_label"`                       // 从 User-Agent 解析
+	PreviousJTI           string `json:"previous_jti,omitempty"`            // grace window 用
+	PreviousResponseUntil int64  `json:"previous_response_until,omitempty"` // unix seconds；grace 截止
+	AbsoluteExp           int64  `json:"abs_exp"`                           // unix seconds；rotation 不延长
+	DeviceLabel           string `json:"device_label"`                      // 从 User-Agent 解析
 	IPAtLogin             string `json:"ip_at_login"`
-	CreatedAt             int64  `json:"created_at"`                         // unix seconds
-	LastRotatedAt         int64  `json:"last_rotated_at"`                    // unix seconds
+	CreatedAt             int64  `json:"created_at"`      // unix seconds
+	LastRotatedAt         int64  `json:"last_rotated_at"` // unix seconds
 }
 
 // FamilyStore — Refresh Token Family 的原子操作接口。

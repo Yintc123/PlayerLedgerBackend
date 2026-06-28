@@ -31,13 +31,13 @@ func FromTokenPair(tp *service.TokenPair) *TokenPairDTO {
 
 // SessionInfoDTO 会话信息（§17）
 type SessionInfoDTO struct {
-	FID            string    `json:"fid"`
-	ClientID       string    `json:"client_id"`
-	DeviceLabel    string    `json:"device_label"`
-	IPAtLogin      string    `json:"ip_at_login"`
-	CreatedAt      time.Time `json:"created_at"`
-	LastRotatedAt  time.Time `json:"last_rotated_at"`
-	IsCurrent      bool      `json:"is_current"`
+	FID           string    `json:"fid"`
+	ClientID      string    `json:"client_id"`
+	DeviceLabel   string    `json:"device_label"`
+	IPAtLogin     string    `json:"ip_at_login"`
+	CreatedAt     time.Time `json:"created_at"`
+	LastRotatedAt time.Time `json:"last_rotated_at"`
+	IsCurrent     bool      `json:"is_current"`
 }
 
 // FromSessionInfo 从 service.SessionInfo 转换

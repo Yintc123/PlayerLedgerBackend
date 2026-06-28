@@ -72,8 +72,8 @@ type Manager interface {
 }
 
 type manager struct {
-	cfg                config.JWTConfig
-	clientIDWhitelist  map[string]bool
+	cfg               config.JWTConfig
+	clientIDWhitelist map[string]bool
 }
 
 // NewManager 由 cfg 構造 Manager。
@@ -137,11 +137,11 @@ func (m *manager) SignRefresh(ctx context.Context, p SignRefreshParams) (string,
 
 // VerifyAccess 驗證 access token。
 // 驗證流程（詳見規格 §8.3）：
-//   0. Alg 鎖定 HS256（防 alg=none / alg confusion）
-//   1. 簽章先試主 secret，失敗再試 PreviousSecret（若已設定）→ 都失敗回 ErrInvalidToken
-//   2. iss 必須 == cfg.Issuer
-//   3. aud 必須 ∈ 已知 client_id 白名單
-//   4. 時間 claim 含 leeway
+//  0. Alg 鎖定 HS256（防 alg=none / alg confusion）
+//  1. 簽章先試主 secret，失敗再試 PreviousSecret（若已設定）→ 都失敗回 ErrInvalidToken
+//  2. iss 必須 == cfg.Issuer
+//  3. aud 必須 ∈ 已知 client_id 白名單
+//  4. 時間 claim 含 leeway
 func (m *manager) VerifyAccess(ctx context.Context, tokenString string) (*AccessClaims, error) {
 	keyFn := func(secret string) jwt.Keyfunc {
 		return func(t *jwt.Token) (interface{}, error) {
@@ -190,9 +190,10 @@ func (m *manager) VerifyAccess(ctx context.Context, tokenString string) (*Access
 
 // VerifyRefresh 驗證 refresh token。
 // 驗證流程（詳見規格 §8.3）：
-//   0-3. 同 VerifyAccess（alg / secret / iss / aud）
-//   4. 時間 claim 含 leeway
-//   5. abs_exp 額外檢查：abs_exp + leeway > now，否則 ErrAbsoluteExpired
+//
+//	0-3. 同 VerifyAccess（alg / secret / iss / aud）
+//	4. 時間 claim 含 leeway
+//	5. abs_exp 額外檢查：abs_exp + leeway > now，否則 ErrAbsoluteExpired
 func (m *manager) VerifyRefresh(ctx context.Context, tokenString string) (*RefreshClaims, error) {
 	keyFn := func(secret string) jwt.Keyfunc {
 		return func(t *jwt.Token) (interface{}, error) {

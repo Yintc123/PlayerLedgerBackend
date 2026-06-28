@@ -5,10 +5,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/ulule/limiter/v3"
 	"github.com/yintengching/playerledger/pkg/jwt"
 	"github.com/yintengching/playerledger/pkg/logger"
 	"github.com/yintengching/playerledger/pkg/metrics"
-	"github.com/ulule/limiter/v3"
 	"go.uber.org/zap"
 )
 

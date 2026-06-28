@@ -285,13 +285,13 @@ func TestVerifyAccessToken_PreviousSecretFallback(t *testing.T) {
 
 	// 用新配置驗證（新 secret + 旧 secret 作为 fallback）
 	newCfg := config.JWTConfig{
-		Issuer:            "playerledger",
-		Secret:            "new-secret-must-be-at-least-32-chars-long-xxx",
-		PreviousSecret:    "old-secret-must-be-at-least-32-chars-long-xxx",
-		RefreshSecret:     "test-refresh-secret-must-be-32-chars-long-xxxxx",
-		AccessTTL:         15 * time.Minute,
-		ClockSkewLeeway:   30 * time.Second,
-		ClientPolicies:    oldCfg.ClientPolicies,
+		Issuer:          "playerledger",
+		Secret:          "new-secret-must-be-at-least-32-chars-long-xxx",
+		PreviousSecret:  "old-secret-must-be-at-least-32-chars-long-xxx",
+		RefreshSecret:   "test-refresh-secret-must-be-32-chars-long-xxxxx",
+		AccessTTL:       15 * time.Minute,
+		ClockSkewLeeway: 30 * time.Second,
+		ClientPolicies:  oldCfg.ClientPolicies,
 	}
 	newMgr := NewManager(newCfg)
 	claims, err := newMgr.VerifyAccess(ctx, token)
@@ -497,7 +497,7 @@ func newTestConfig() config.JWTConfig {
 				AbsoluteTTL: 24 * time.Hour,
 			},
 			"ios-app": {
-				RefreshTTL:  720 * time.Hour, // 30d
+				RefreshTTL:  720 * time.Hour,  // 30d
 				AbsoluteTTL: 4320 * time.Hour, // 180d
 			},
 		},

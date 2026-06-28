@@ -153,9 +153,9 @@ func (m *fakeJWTManager) SignRefresh(ctx context.Context, p jwt.SignRefreshParam
 func (m *fakeJWTManager) VerifyRefresh(ctx context.Context, token string) (*jwt.RefreshClaims, error) {
 	// 解析假 token 格式：fake_refresh_token_<jti>
 	claims := &jwt.RefreshClaims{}
-	claims.RegisteredClaims.Subject = "fake_user_id"
-	claims.RegisteredClaims.ID = "fake_jti"
-	claims.RegisteredClaims.Audience = []string{"cms-web"}
+	claims.Subject = "fake_user_id"
+	claims.ID = "fake_jti"
+	claims.Audience = []string{"cms-web"}
 	claims.FamilyID = "fake_fid"
 	claims.AbsoluteExp = time.Now().Add(8 * time.Hour).Unix()
 	return claims, nil
@@ -410,7 +410,7 @@ func TestAuthService_Login_Success(t *testing.T) {
 	assert.Equal(t, "Bearer", pair.TokenType)
 	assert.NotEmpty(t, pair.AccessToken)
 	assert.NotEmpty(t, pair.RefreshToken)
-	assert.Equal(t, 900, pair.ExpiresIn)  // access TTL = 15m = 900s（§8.2 固定 AccessTTL）
+	assert.Equal(t, 900, pair.ExpiresIn) // access TTL = 15m = 900s（§8.2 固定 AccessTTL）
 	assert.Equal(t, 3600, pair.RefreshExpiresIn)
 
 	// 驗證 family 已保存
