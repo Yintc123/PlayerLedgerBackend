@@ -25,3 +25,7 @@ vendor/
 
 # Claude Code
 .claude/
+
+# compiled binaries（誤 commit 修正，2026-06-29）
+/server
+/bin/
