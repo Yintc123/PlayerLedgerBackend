@@ -11,9 +11,14 @@ info:
 
 servers:
   - url: http://localhost:8080/api/v1
-    description: 本地開發
+    description: 本地開發（Auth endpoints）
   - url: https://api.example.com/api/v1
-    description: 正式環境
+    description: 正式環境（Auth endpoints）
+  # CMS endpoints 無版本號，使用下列 base URL；path-level servers 覆寫在各 /cms/* 路徑定義。
+  - url: http://localhost:8080/api
+    description: 本地開發（CMS endpoints，無版本號）
+  - url: https://api.example.com/api
+    description: 正式環境（CMS endpoints，無版本號）
 
 tags:
   - name: auth

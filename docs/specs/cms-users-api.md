@@ -64,7 +64,7 @@ CMS users 表內所有人（admin / user / viewer）統一稱「CMS staff」。
 | PATCH | `/cms/users/me` | access token | 自己 | `CMSUserService.UpdateSelf` | 改自己 username / password；**不能改 role** |
 
 > 註冊（建新帳號）走既有 `POST /auth/register`，見 `infrastructure.md` §3.5.2。
-> 路由前綴：`/api/v1`（與 §3 OpenAPI servers 一致）。
+> 路由前綴：`/api`（無版本號；CMS 為內部工具，不需版本隔離）。
 > 所有端點皆需 `Authorization: Bearer <access_token>`，且 `claims.utype == "cms"` 才能進入；
 > 非 CMS 一律 `403 forbidden`（不是 404，因為對 CMS user 來說資源存在）。
 
@@ -446,17 +446,17 @@ components:
 ```bash
 # 列出所有 admin（admin 視角，看軟刪除）
 curl -H "Authorization: Bearer $TOKEN" \
-  "https://api.example.com/api/v1/cms/users?role=admin&include_deleted=true&sort=-created_at"
+  "https://api.example.com/api/cms/users?role=admin&include_deleted=true&sort=-created_at"
 
 # 降級 alice 為 viewer（admin only；觸發 alice 全裝置強制重登）
 curl -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"role":"viewer"}' \
-  "https://api.example.com/api/v1/cms/users/0193b3f4-1234-7abc-9def-0123456789ab"
+  "https://api.example.com/api/cms/users/0193b3f4-1234-7abc-9def-0123456789ab"
 
 # 自助改密碼
 curl -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"current_password":"old","new_password":"new-pw-strong-123"}' \
-  "https://api.example.com/api/v1/cms/users/me"
+  "https://api.example.com/api/cms/users/me"
 ```
 
 ```json
@@ -804,7 +804,7 @@ WHERE deleted_at IS NULL;
   - **路由註冊順序**：`/me` 必須先於 `/:id`（Gin tree 採 longest static prefix 優先，順序錯會 panic）
 
   ```go
-  g := r.Group("/api/v1/cms/users",
+  g := r.Group("/api/cms/users",
       jwt.AuthMiddleware(jwtMgr, blacklist, userRevoke),
       jwt.RequireUserType(jwt.UserTypeCMS),
   )
