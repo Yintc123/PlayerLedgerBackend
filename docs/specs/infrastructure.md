@@ -84,10 +84,12 @@ PlayerLedgerBackend/
 │   ├── dto/                     # 對前端的資料傳輸物件（含 Model→DTO 轉換）
 │   └── pagination/              # 分頁參數解析與 GORM scope
 ├── pkg/
+│   ├── ctxkey/                  # context.Context typed keys 與 helper（最底層，無 import 任何 pkg）
+│   │   └── ctxkey.go            # SetRequestID(ctx,id) / RequestID(ctx) / RequestIDHeader 常數
 │   ├── logger/                  # Zap 封裝，全域 logger（不含 HTTP 中介層以外的 panic 處理）
 │   │   ├── logger.go            # Init / L() / With()
 │   │   ├── middleware.go        # GinLogger（GinRecovery 已移至 pkg/httpx，見 §9.3）
-│   │   └── requestid.go         # RequestID middleware + GetRequestID + GetRequestIDFromCtx
+│   │   └── requestid.go         # RequestID middleware + GetRequestID（gin 版）；ctx 版見 pkg/ctxkey
 │   ├── auth/
 │   │   └── hasher/              # 密碼雜湊抽象層（bcrypt 預設實作；未來可換 argon2id）
 │   │       ├── hasher.go        # Hasher interface
@@ -109,8 +111,12 @@ PlayerLedgerBackend/
 │       └── error.go             # WriteError（所有中介層共用錯誤回應）
 ├── migrations/                  # golang-migrate SQL 腳本（專案根；embed 透過 embed.go 匯出）
 │   ├── embed.go                 # //go:embed *.sql var FS embed.FS
-│   ├── 000001_create_players.up.sql
-│   └── 000001_create_players.down.sql
+│   ├── 000001_create_cms_users.up.sql      # auth 必需，見 §13.5
+│   ├── 000001_create_cms_users.down.sql
+│   ├── 000002_create_members.up.sql
+│   ├── 000002_create_members.down.sql
+│   ├── 000003_seed_initial_admin.up.sql    # dev/demo only，prod 須改密碼
+│   └── 000003_seed_initial_admin.down.sql
 ├── schema/                      # OpenAPI 3.1 契約（SDD 唯一真實來源）
 │   ├── openapi.yaml             # 主 schema 檔
 │   └── components/              # 共用 schema 元件
@@ -129,6 +135,38 @@ PlayerLedgerBackend/
 ├── .env.example                 # 環境變數範例
 └── README.md
 ```
+
+### 2.1 依賴方向
+
+模組間 import 邊明文鎖定，避免 cycle 與不可預期的耦合。CI 由 `golangci-lint` 的 `depguard` rule 強制（§23.4）。
+
+```
+internal/handler ─→ internal/service ─→ internal/repository ─→ internal/model
+internal/handler ─→ pkg/httpx   ─→ pkg/logger ─→ pkg/ctxkey
+internal/handler ─→ internal/apperr
+internal/service ─→ pkg/jwt     ─→ pkg/redis ─→ pkg/logger ─→ pkg/ctxkey
+internal/service ─→ pkg/auth/hasher
+internal/service ─→ pkg/audit   ─→ pkg/ctxkey                  ← audit 不經 pkg/logger
+pkg/ratelimit    ─→ pkg/jwt     ─→ pkg/redis ─→ pkg/logger
+pkg/database     ─→ pkg/logger（zapgorm2 整合）
+pkg/redis        ─→ pkg/logger
+pkg/metrics      —— 葉節點，無 internal/* 依賴
+pkg/ctxkey       —— 最底層，無 import 任何 pkg（純 context helper）
+```
+
+永遠單向、禁止反向的規則：
+
+| 規則 | 違反後果 |
+|---|---|
+| `pkg/* → internal/*` 永遠禁止 | pkg 是 reusable 元件，反向 import 立即 cycle |
+| `pkg/redis` 禁止 import `pkg/jwt` / `pkg/ratelimit` | 與 `pkg/ratelimit → pkg/jwt → pkg/redis` 形成 cycle |
+| `pkg/logger` 禁止 import `pkg/httpx` / `pkg/jwt` / `pkg/redis` | logger 是最底層，反向 import 立即 cycle（v1.9 已修 `pkg/httpx`） |
+| `pkg/audit` 禁止 import `pkg/logger` / `pkg/jwt` / `pkg/redis` | audit 是獨立 sink，import 應用層 package 會把 LOG_LEVEL / package 問題傳染到 audit；用 `pkg/ctxkey` 取 request_id 即可 |
+| `internal/model` 不得 import 任何其他 internal 子目錄 | model 是純資料結構，反向會綁死 service 改動 |
+| `internal/repository` 不得 import `internal/service` | repository 是純資料存取，反向耦合會讓 fake 失效 |
+| `internal/service` 不得 import `internal/handler` | service 不知 HTTP；handler 透過 ctx / DTO 傳值 |
+
+> **OpenTelemetry 預留**：所有 service / repository 簽章第一參數均接 `context.Context`，未來導入 OTel 直接掛 span 不改 interface（見 §1）。
 
 ---
 
@@ -161,6 +199,22 @@ redocly lint schema/openapi.yaml
 ```
 
 Schema 不符規範直接擋下 PR。E2E test 必須在每個 handler 至少一個 happy path 與一個 error path 中驗證 response 符合 schema。
+
+### 3.4 Auth Endpoint 清單
+
+以下端點由 `schema/openapi.yaml` 明確定義，handler 一律對齊 schema：
+
+| Method | Path | Auth | Service | 說明 |
+|---|---|---|---|---|
+| POST | `/auth/register` | 公開 | `AuthService.Register` | **僅 `client_id == "cms-web"` 放行**；CMS 自註冊，預設 `role = user`；成功回 201 無 body |
+| POST | `/auth/login` | 公開 | `AuthService.Login` | 帳密登入，依 `client_id` 路由表（見 §8.9） |
+| POST | `/auth/refresh` | refresh token 自我認證 | `AuthService.Refresh` | Family-based rotation；行為見 §8.2 |
+| POST | `/auth/logout` | access token | `AuthService.Logout` | 廢當前 family + access JTI 入黑名單 |
+| GET | `/auth/sessions` | access token | `AuthService.ListSessions` | 列我所有 family（lazy cleanup） |
+| DELETE | `/auth/sessions/{fid}` | access token | `AuthService.RevokeSession` | 撤銷指定 family；不可撤自己當前 family |
+| POST | `/auth/sessions/revoke-all` | access token | `AuthService.RevokeAll` | 全裝置登出 + 當前 access JTI 入黑名單 |
+
+> `/health`、`/health/ready`、`/metrics` 屬 ops 端點，**不在 OpenAPI 契約範圍**（不對外公布、不保證版本相容），規格定義見 §11、§18.1。
 
 ---
 
@@ -203,12 +257,12 @@ type ServerConfig struct {
     AllowedOrigins    []string      `mapstructure:"ALLOWED_ORIGINS" validate:"required,dive,required"`
     AllowCredentials  bool          `mapstructure:"ALLOW_CREDENTIALS"`
     TrustedProxies    []string      `mapstructure:"TRUSTED_PROXIES"`    // CIDR；空陣列代表完全不信任 proxy header
-    ShutdownTimeout   time.Duration `mapstructure:"SHUTDOWN_TIMEOUT"`   // 預設 10s
-    ReadHeaderTimeout time.Duration `mapstructure:"READ_HEADER_TIMEOUT"` // 預設 10s，防 Slowloris
-    ReadTimeout       time.Duration `mapstructure:"READ_TIMEOUT"`       // 預設 30s
-    WriteTimeout      time.Duration `mapstructure:"WRITE_TIMEOUT"`      // 預設 30s
-    IdleTimeout       time.Duration `mapstructure:"IDLE_TIMEOUT"`       // 預設 120s
-    MaxRequestBody    int64         `mapstructure:"MAX_REQUEST_BODY"`   // bytes，預設 1MB
+    ShutdownTimeout   time.Duration `mapstructure:"SHUTDOWN_TIMEOUT"    validate:"required,min=1s"`   // 預設 10s；0 會讓 graceful shutdown 立即 cancel
+    ReadHeaderTimeout time.Duration `mapstructure:"READ_HEADER_TIMEOUT" validate:"required,min=1s"`   // 預設 10s，防 Slowloris
+    ReadTimeout       time.Duration `mapstructure:"READ_TIMEOUT"        validate:"required,min=1s"`   // 預設 30s
+    WriteTimeout      time.Duration `mapstructure:"WRITE_TIMEOUT"       validate:"required,min=1s"`   // 預設 30s
+    IdleTimeout       time.Duration `mapstructure:"IDLE_TIMEOUT"        validate:"required,min=1s"`   // 預設 120s
+    MaxRequestBody    int64         `mapstructure:"MAX_REQUEST_BODY"    validate:"required,min=1024"` // bytes，預設 1MB；0 會讓 MaxBytesReader 把所有 body 視為超限 (413)
 }
 
 type DatabaseConfig struct {
@@ -254,8 +308,9 @@ type JWTConfig struct {
     PreviousSecret        string                  `mapstructure:"JWT_SECRET_PREVIOUS" validate:"omitempty,min=32,nefield=Secret"` // 上一把 access secret；rotation grace 期間用於 verify fallback。若設定，強度必須等同主 secret 且不可與主 secret 相同
     RefreshSecret         string                  `mapstructure:"JWT_REFRESH_SECRET" validate:"required,min=32,nefield=Secret"`
     PreviousRefreshSecret string                  `mapstructure:"JWT_REFRESH_SECRET_PREVIOUS" validate:"omitempty,min=32,nefield=RefreshSecret"` // 上一把 refresh secret；同上
-    AccessTTL             time.Duration           `mapstructure:"JWT_ACCESS_TTL"`        // 預設 15m（短期 access token）
-    GraceWindow           time.Duration           `mapstructure:"JWT_GRACE_WINDOW"`      // 預設 10s（容忍網路重試的同 jti 重送）
+    AccessTTL             time.Duration           `mapstructure:"JWT_ACCESS_TTL"          validate:"required,min=1m"`   // 預設 15m（短期 access token）
+    GraceWindow           time.Duration           `mapstructure:"JWT_GRACE_WINDOW"        validate:"min=0,max=1m"`      // 預設 10s；0 = 停用 grace（重試一律觸發 replay）；上限 1m 避免攻擊窗過長
+    ClockSkewLeeway       time.Duration           `mapstructure:"JWT_CLOCK_SKEW_LEEWAY" validate:"min=0,max=2m"` // 預設 30s。Verify 對 exp / nbf / iat / abs_exp 含此 leeway，容忍多副本部署的時鐘漂移
     ClientPolicies        map[string]ClientPolicy `mapstructure:"JWT_CLIENT_POLICIES"`   // key = client_id（cms-web / public-web / ios-app）
     BcryptCost            int                     `mapstructure:"BCRYPT_COST" validate:"min=10,max=15"` // 預設 12
 }
@@ -277,12 +332,13 @@ type LogConfig struct {
 type RateLimitConfig struct {
     Enabled  bool          `mapstructure:"RATE_LIMIT_ENABLED"`
     // IP 限流：所有人都受限（含未登入）
-    IPPeriod time.Duration `mapstructure:"RATE_LIMIT_IP_PERIOD"`
-    IPLimit  int64         `mapstructure:"RATE_LIMIT_IP_MAX"`
+    IPPeriod time.Duration `mapstructure:"RATE_LIMIT_IP_PERIOD" validate:"omitempty,min=1s"`
+    IPLimit  int64         `mapstructure:"RATE_LIMIT_IP_MAX"    validate:"omitempty,min=1"`
     // User 限流：登入後額外套用，額度可較寬鬆
-    UserPeriod time.Duration `mapstructure:"RATE_LIMIT_USER_PERIOD"`
-    UserLimit  int64         `mapstructure:"RATE_LIMIT_USER_MAX"`
+    UserPeriod time.Duration `mapstructure:"RATE_LIMIT_USER_PERIOD" validate:"omitempty,min=1s"`
+    UserLimit  int64         `mapstructure:"RATE_LIMIT_USER_MAX"    validate:"omitempty,min=1"`
 }
+// Enabled=true 時，IPPeriod / IPLimit / UserPeriod / UserLimit 全部必填且 > 0；由 Validate() 跨欄位檢查（struct tag 無法在 Enabled=true 條件下要求其他欄位 required）。
 // 對應的 ratelimit.IPMiddleware / UserMiddleware 各取一組 (Period, Limit) 使用，見 §15
 
 type MetricsConfig struct {
@@ -290,11 +346,25 @@ type MetricsConfig struct {
     Path    string `mapstructure:"METRICS_PATH"` // 預設 /metrics
 }
 
-// Validate 處理 struct tag 無法表達的跨欄位約束
+// Validate 處理 struct tag 無法表達的跨欄位約束。
+// 所有規則一律 fail-fast — 啟動立即退出，禁止以「降級設定」繼續執行。
 func (c *Config) Validate() error {
     for _, origin := range c.Server.AllowedOrigins {
         if origin == "*" && c.Server.AllowCredentials {
             return errors.New("ALLOW_CREDENTIALS=true 時 ALLOWED_ORIGINS 不可為 *（瀏覽器規範禁止）")
+        }
+    }
+    // Production 禁止 sslmode=disable（明文連線 DB；對齊 §6.1）
+    if c.App.Env == "prod" && c.Database.SSLMode == "disable" {
+        return errors.New("APP_ENV=prod 禁止 DB_SSLMODE=disable，必須 require / verify-ca / verify-full")
+    }
+    // RateLimit 啟用時，四個參數必須齊備且 > 0
+    if c.RateLimit.Enabled {
+        if c.RateLimit.IPPeriod < time.Second || c.RateLimit.IPLimit < 1 {
+            return errors.New("RATE_LIMIT_ENABLED=true 時 RATE_LIMIT_IP_PERIOD ≥ 1s 且 RATE_LIMIT_IP_MAX ≥ 1")
+        }
+        if c.RateLimit.UserPeriod < time.Second || c.RateLimit.UserLimit < 1 {
+            return errors.New("RATE_LIMIT_ENABLED=true 時 RATE_LIMIT_USER_PERIOD ≥ 1s 且 RATE_LIMIT_USER_MAX ≥ 1")
         }
     }
     return nil
@@ -390,6 +460,7 @@ func setDefaults(v *viper.Viper) {
     v.SetDefault("JWT_ISSUER", "playerledger")
     v.SetDefault("JWT_ACCESS_TTL", "15m")
     v.SetDefault("JWT_GRACE_WINDOW", "10s")
+    v.SetDefault("JWT_CLOCK_SKEW_LEEWAY", "30s")
     // ClientPolicies 預設值。
     // mapstructure key 用 "." / "-"（給 viper 解析巢狀 map 與保留原始 client_id 字面值）；
     // shell env 對應名稱為 JWT_CLIENT_POLICIES_<CLIENT_ID>_REFRESH_TTL 等（"." / "-" → "_"）。
@@ -425,10 +496,20 @@ func setDefaults(v *viper.Viper) {
 ```go
 // pkg/logger/logger.go
 
+// 全域 logger 內部以 atomic.Pointer[zap.Logger] 儲存，**Init 之前 L() 回 zap.NewNop()**，
+// 避免 init 順序錯誤（例如某 pkg.Connect 在 logger.Init 之前 capture L()）導致 nil deref。
+// Init 後以 atomic.Store 切換，呼叫端 capture 後仍指到舊 instance（zap.Logger 本身 thread-safe）。
+
 // Init 用 service + env 兩個 baseFields 初始化全域 logger。
 // env 由 cfg.App.Env 提供（單一真實來源，不另開 LOG_ENV）。
+// 重複呼叫 Init 為 no-op + warn，不允許 runtime 替換 logger instance。
 func Init(logCfg config.LogConfig, env string) error
-func L() *zap.Logger                       // 取得全域 logger（含 service / env baseFields）
+
+// L 取得全域 logger（含 service / env baseFields）。
+// Init 之前回 zap.NewNop()（safe no-op）；Init 後回真實 logger。
+func L() *zap.Logger
+
+// With 在全域 logger 上加 fields；同樣 Init 之前回 nop logger.With(...)。
 func With(fields ...zap.Field) *zap.Logger
 ```
 
@@ -437,8 +518,27 @@ func With(fields ...zap.Field) *zap.Logger
 ```go
 // pkg/logger/middleware.go
 
-// GinLogger 記錄每個 request 的 method / path / status / latency（含 request_id）
-// skipPaths 中的路徑不會寫入 access log（健康檢查、metrics）
+// GinLogger 記錄每個 request 的 access log。
+// skipPaths 中的路徑不會寫入（健康檢查、metrics）。
+//
+// 寫入欄位（固定，TDD 可直接以此為斷言）：
+//   - method        string  — c.Request.Method
+//   - path          string  — c.FullPath()（已模板化，避免 path param 高基數爆炸 metrics 與 log）
+//   - status        int     — c.Writer.Status()
+//   - latency_ms    int64   — time.Since(start).Milliseconds()
+//   - client_ip     string  — c.ClientIP()（依 TrustedProxies §9.2）
+//   - user_agent    string  — c.Request.UserAgent()
+//   - bytes_in      int64   — c.Request.ContentLength（unknown 時為 -1）
+//   - bytes_out     int     — c.Writer.Size()
+//   - request_id    string  — logger.GetRequestID(c)
+//   - errors        string  — c.Errors.ByType(gin.ErrorTypePrivate).String()（非空才寫）
+//
+// 不寫的欄位（刻意省略）：
+//   - query string：可能含 token / 密碼等 sensitive value，**預設不寫**；若需 debug，由 caller 顯式 enable
+//   - request body：access log 不該帶 body（量大、易洩漏 PII）
+//   - response body：同上
+//
+// log level 依 status：5xx → Error；4xx → Warn；其他 → Info。
 func GinLogger(skipPaths ...string) gin.HandlerFunc
 ```
 
@@ -452,34 +552,64 @@ func GinLogger(skipPaths ...string) gin.HandlerFunc
 
 ### 5.4 Request ID 模組
 
-實作於 `pkg/logger/requestid.go`，必須在 `GinLogger` 之前掛載。
+跨 gin / context.Context 的 request_id 傳遞，分成兩個 package：
+
+- **`pkg/ctxkey`**：純 context.Context typed key 與 Get / Set helper（最底層、無 import）。讓 `pkg/audit` 等不該依賴 `pkg/logger` 的模組也能取 request_id（§2.1）。
+- **`pkg/logger`**：RequestID middleware（負責產生 / 注入）+ gin.Context 版的 `GetRequestID`。
+
+```go
+// pkg/ctxkey/ctxkey.go
+package ctxkey
+
+import "context"
+
+const RequestIDHeader = "X-Request-ID"
+
+// requestIDKey 為 context.Context 的 typed key（unexported，避免外部誤造同型 key 碰撞）。
+type requestIDKey struct{}
+
+// SetRequestID 注入 request_id 到 ctx；由 RequestID middleware 在 request 入口呼叫。
+func SetRequestID(ctx context.Context, id string) context.Context {
+    return context.WithValue(ctx, requestIDKey{}, id)
+}
+
+// RequestID 從 ctx 取 request_id；未注入（例如 background goroutine）回空字串。
+// 給下游純 context.Context 介面用（service / audit logger / repository）。
+func RequestID(ctx context.Context) string {
+    if ctx == nil {
+        return ""
+    }
+    s, _ := ctx.Value(requestIDKey{}).(string)
+    return s
+}
+```
 
 ```go
 // pkg/logger/requestid.go
+package logger
 
-const RequestIDKey    = "request_id"   // gin.Context key 與 context.Context value key 共用同一字串
-const RequestIDHeader = "X-Request-ID" // HTTP header name
+import (
+    "github.com/<org>/playerledger/pkg/ctxkey"
+    // ...
+)
 
-// requestIDCtxKey 為 context.Context 的 typed key（避免與其他套件 string key 碰撞）。
-type requestIDCtxKey struct{}
+const RequestIDKey = "request_id"   // gin.Context map key（gin 內部用 map[string]any，必須字串）
 
 // RequestID 為每個 request 注入唯一 ID。
 // 優先沿用上游或客戶端傳入的合法 X-Request-ID，否則自行產生 UUID v4。
 // 不合法（超長、含控制字元）視同未提供，靜默產生新 ID。
 //
 // 同時把 ID 注入 gin.Context（給 c.Get 用）與 c.Request.Context()
-// （給下游純 context.Context 介面如 service / audit logger 用）。
+// （給下游純 context.Context 介面用；透過 pkg/ctxkey 的 typed key）。
 func RequestID() gin.HandlerFunc {
     return func(c *gin.Context) {
-        id := c.GetHeader(RequestIDHeader)
+        id := c.GetHeader(ctxkey.RequestIDHeader)
         if !isValidRequestID(id) {
             id = uuid.New().String()
         }
         c.Set(RequestIDKey, id)
-        c.Request = c.Request.WithContext(
-            context.WithValue(c.Request.Context(), requestIDCtxKey{}, id),
-        )
-        c.Header(RequestIDHeader, id) // 回寫，方便 debug
+        c.Request = c.Request.WithContext(ctxkey.SetRequestID(c.Request.Context(), id))
+        c.Header(ctxkey.RequestIDHeader, id) // 回寫，方便 debug
         c.Next()
     }
 }
@@ -497,21 +627,11 @@ func isValidRequestID(id string) bool {
     return true
 }
 
-// GetRequestID 從 gin.Context 取 request_id。Handler / middleware 用。
+// GetRequestID 從 gin.Context 取 request_id。Handler / middleware 用（gin context 版）。
+// 純 context.Context 版本請用 ctxkey.RequestID(ctx)。
 func GetRequestID(c *gin.Context) string {
     id, _ := c.Get(RequestIDKey)
     s, _ := id.(string)
-    return s
-}
-
-// GetRequestIDFromCtx 從純 context.Context 取 request_id。
-// 給沒有 gin.Context 的下游用（service 層、audit logger、repository）。
-// 若 context 未注入 ID（例如 background goroutine）回空字串，呼叫端自行處理。
-func GetRequestIDFromCtx(ctx context.Context) string {
-    if ctx == nil {
-        return ""
-    }
-    s, _ := ctx.Value(requestIDCtxKey{}).(string)
     return s
 }
 ```
@@ -610,6 +730,60 @@ type PlayerRepository interface {
 // 測試時用 FakePlayerRepository 替換，不 mock *gorm.DB
 ```
 
+### 6.5 Auth 相關 Model / Repository
+
+Auth 必需的兩張表 — `cms_users`（CMS 內部人員）與 `members`（一般玩家）— 雖屬業務 model，但 `AuthService.Login` / `Register`（見 §8.9）直接依賴；為避免實作時找不到 contract，定義納入基礎架構規格。
+
+> **設計取捨**：
+> - 兩張表結構刻意對齊（id、username、password_hash + 標準 timestamps），便於 `Hasher`（§8.3.2）與 audit log（§18.3）統一處理。
+> - `members` **不放 `role` 欄位** — `utype=member ⇒ role=member` 是規則，由程式碼 enforce，避免 DB 重複資料。
+> - **Member 註冊現階段不開放**，dev/test 透過 SQL 手動 seed；正式註冊機制（自註冊 / 邀請 / 外部 sync）待後續業務 spec 決定。`MemberRepository` 因此只暴露 `FindByUsername`，不提供 `Create`。
+> - **CMS 開放自註冊**（見 §8.2 / §8.9 Register 流程），預設 role 為 `user`。`role` 升級／降級走 admin-only endpoint，留給後續業務 spec。
+
+```go
+// internal/model/cms_user.go
+type CMSUser struct {
+    Base                                   // id, created_at, updated_at, deleted_at（見 §6.3）
+    Username     string `gorm:"size:64;not null;uniqueIndex:uq_cms_users_username,where:deleted_at IS NULL"`
+    PasswordHash string `gorm:"size:72;not null"`  // bcrypt 輸出 60 byte + margin
+    Role         string `gorm:"size:16;not null"`  // admin / user / viewer
+}
+
+func (CMSUser) TableName() string { return "cms_users" }
+
+// internal/model/member.go
+type Member struct {
+    Base
+    Username     string `gorm:"size:64;not null;uniqueIndex:uq_members_username,where:deleted_at IS NULL"`
+    PasswordHash string `gorm:"size:72;not null"`
+}
+
+func (Member) TableName() string { return "members" }
+```
+
+```go
+// internal/repository/cms_user_repository.go
+type CMSUserRepository interface {
+    // FindByUsername：找不到回 apperr.ErrNotFound；DB 錯誤一律 fmt.Errorf("find cms user: %w", err)。
+    FindByUsername(ctx context.Context, username string) (*model.CMSUser, error)
+
+    // Create：username 已存在回 apperr.ErrConflict（依 §12.5 unique constraint 23505 包裝）。
+    // 由 AuthService 在 Hasher.Hash(password) 後呼叫，禁止直接傳明文密碼。
+    Create(ctx context.Context, u *model.CMSUser) error
+}
+
+// internal/repository/member_repository.go
+type MemberRepository interface {
+    // FindByUsername：找不到回 apperr.ErrNotFound。
+    // 不提供 Create — Member 註冊流程現階段不開放（見上方設計取捨）。
+    FindByUsername(ctx context.Context, username string) (*model.Member, error)
+}
+```
+
+> **Username 唯一性**：採**各表獨立 unique**（partial unique index 排除 soft-delete 列）。同一個 username 可同時是 CMS user 與 member（不同人），application 層**不做**跨表檢查。
+>
+> **Partial unique index**：`WHERE deleted_at IS NULL` 子句讓「軟刪後同 username 可重註冊」成立，是 PostgreSQL 慣用做法。GORM v2 透過 `uniqueIndex:<name>,where:<expr>` tag 表達；對應 migration SQL 必須一致（見 §13.2 範例）。
+
 ---
 
 ## 7. Redis 模組
@@ -655,13 +829,30 @@ func Connect(cfg config.RedisConfig) (*redis.Client, error) {
 
 ```go
 // pkg/redis/blacklist.go
+
 type AccessTokenBlacklist interface {
+    // Add 將 jti 加入黑名單，存活 ttl 秒。
+    //   - ttl <= 0：視為「token 已自然過期」，直接 no-op 不寫入。
+    //   - Redis 寫入失敗：回包裝 error。caller（Logout / RevokeAll）應 log + metric，
+    //     但不影響「廢 family」此一更關鍵步驟（family 已廢 = refresh 路徑已斷）。
     Add(ctx context.Context, jti string, ttl time.Duration) error
+
+    // IsBlacklisted 查詢 jti 是否在黑名單。
+    //   - 找不到 key                 → (false, nil)
+    //   - 命中                       → (true, nil)
+    //   - **Redis 故障（連線錯 / timeout）→ (false, err)**：由 caller fail-open。
+    //     AuthMiddleware 收到 err 後 log warn + metrics.AuthBlacklistErrors.Inc() + 放行
+    //     （hot path 不能因 Redis 抖動全打 401；強制踢人是稀有事件，short-term miss 可接受）。
     IsBlacklisted(ctx context.Context, jti string) (bool, error)
 }
+
+// NewAccessTokenBlacklist 由 *redis.Client 構造預設實作。
+// 使用 SETEX + EXISTS 兩條原生命令，無 Lua（單 key 操作）。
+func NewAccessTokenBlacklist(client *redis.Client) AccessTokenBlacklist
 ```
 
 > Key 命名：`auth:blacklist:<accessJTI>`（單 key 操作，不需 hash tag）。
+> 對應 metric `auth_blacklist_errors_total` 見 §18.2。
 
 ### 7.4 Refresh Token Family Store 介面
 
@@ -727,7 +918,15 @@ type FamilyStore interface {
 
     // Rotate：原子 CAS — 驗證 presented_jti、更新 current/previous、設定 grace window。
     // Lua 從 state 內部讀 AbsoluteExp 計算 Redis TTL；觸發重放時 Lua 自動 DEL family + SREM 索引。
-    // 回傳的 *FamilyState 在 Rotated / GraceHit 時為當前 state;其他情況為 nil。
+    //
+    // 回傳 invariant：
+    //   - Rotated         → (Rotated, *FamilyState non-nil, nil)
+    //   - GraceHit        → (GraceHit, *FamilyState non-nil, nil)
+    //   - ReplayDetected  → (ReplayDetected, nil, nil)
+    //   - FamilyNotFound  → (FamilyNotFound, nil, nil)
+    //   - 其他 Redis error → (0, nil, err)
+    // 若 Rotated / GraceHit 回傳 nil state（Lua bug / state_json 為空），caller **必須** fail-closed
+    // 視為 ErrFamilyNotFound，禁止對 nil 解參考造成 panic。
     Rotate(ctx context.Context, userID, fid, presentedJTI, newJTI string,
         graceWindow time.Duration) (RotateResult, *FamilyState, error)
 
@@ -737,8 +936,11 @@ type FamilyStore interface {
     // RevokeAll：登出該 user 所有 family（改密碼 / 強制全裝置登出）
     RevokeAll(ctx context.Context, userID string) error
 
-    // ListByUser：列出該 user 所有 family（含 lazy cleanup 孤兒 fid）
+    // ListByUser：列出該 user 所有 family（含 lazy cleanup 孤兒 fid）。
     // 用於 GET /auth/sessions 頁面。
+    //
+    // Redis SMEMBERS 出來無序；本實作須在 Go layer 對結果 **sort by LastRotatedAt desc**，
+    // 讓「最近活躍的裝置」排在前面（UX 預期）。caller 不需再 sort。
     ListByUser(ctx context.Context, userID string) ([]FamilyState, error)
 
     // PreloadScripts：將所有 Lua script 透過 SCRIPT LOAD 寫入 Redis script cache。
@@ -912,7 +1114,7 @@ Refresh（POST /auth/refresh）
 
 Logout（POST /auth/logout）— 僅需 access token；可選帶 refresh_token
   ├─ AuthMiddleware → 取 user_id, fid, access_jti
-  ├─ 若 body 帶 refresh_token：驗簽 + 比對 fid 一致，不一致 → 400
+  ├─ 若 body 帶 refresh_token：驗簽 + 比對 fid 與 access claims 一致；不一致 → ErrInvalidInput（400 `invalid input`，見 §12.4 / §8.9 LogoutInput）
   ├─ FamilyStore.Revoke(user_id, fid)
   ├─ AccessTokenBlacklist.Add(access_jti, ttl=remaining_exp)
   ├─ audit.Log(logout)
@@ -964,12 +1166,13 @@ func GetClaims(c *gin.Context) (*AccessClaims, bool) {
 // jwt.RegisteredClaims 提供 iss, sub, aud, exp, iat, jti 等標準欄位。
 // AccessClaims / RefreshClaims 額外加上系統內部欄位（utype, role, fid, abs_exp）。
 //
-// Verify 流程必須檢查：
+// Verify 流程必須檢查（詳述見 NewManager 文件）：
+//   0. alg 鎖定 HS256（防 alg=none / alg confusion）
 //   1. 簽章正確
 //   2. iss == JWTConfig.Issuer
 //   3. aud ∈ ClientPolicies 已知 client_id
-//   4. exp > now
-//   5. (Refresh only) abs_exp > now → 否則 ErrAbsoluteExpired
+//   4. exp / nbf / iat 含 ClockSkewLeeway 容忍
+//   5. (Refresh only) abs_exp 含 leeway → 否則 ErrAbsoluteExpired
 
 type AccessClaims struct {
     jwt.RegisteredClaims              // iss, sub=userID, aud=client_id, exp, iat, jti=access_jti
@@ -985,10 +1188,17 @@ type RefreshClaims struct {
     AbsoluteExp int64    `json:"abs_exp"` // unix seconds，rotation 不延長，超過則 ErrAbsoluteExpired
 }
 
+// UserID 是 RegisteredClaims.Subject 的具名 alias，遵循 JWT RFC 7519「sub claim 即 user identifier」慣例。
+// 所有 middleware / service / audit 取 user ID 一律呼叫此 method，**禁止直接讀 c.Subject**。
+// 理由：未來若改用複合 ID carriage（例如 base64(user_type + user_uuid)）只動 helper，
+// caller 介面不變；且讀者看到 claims.UserID() 比 claims.Subject 直覺。
+func (c *AccessClaims) UserID() string  { return c.Subject }
+func (c *RefreshClaims) UserID() string { return c.Subject }
+
 // SignAccessParams / SignRefreshParams：用 struct 包裝避免長串位置參數。
 // Issuer 由 jwtManager 內部以 JWTConfig.Issuer 自動填入，不放 Params。
 type SignAccessParams struct {
-    UserID   string
+    UserID   string        // 寫入 JWT 的 sub（RegisteredClaims.Subject）；對應 cms_users.id 或 members.id 的 UUID 字串
     UserType UserType
     Role     Role
     FamilyID string
@@ -998,7 +1208,7 @@ type SignAccessParams struct {
 }
 
 type SignRefreshParams struct {
-    UserID      string
+    UserID      string        // 寫入 sub（同上）
     UserType    UserType
     FamilyID    string
     ClientID    string
@@ -1007,32 +1217,48 @@ type SignRefreshParams struct {
     AbsoluteExp time.Time     // 必須從 server-side state 取（FamilyState.AbsoluteExp），rotation/grace 不改
 }
 
+// Manager 所有 method 第一參數均為 context.Context，對齊 §1「所有 service / repository 簽章必接 ctx」原則。
+// Sign / Verify 本身為 in-memory HMAC 計算，不會 cancel；ctx 主要保留給未來 OTel span 與測試
+// （fake manager 可從 ctx 取注入值），降低介面演進成本。
 type Manager interface {
-    SignAccess(p SignAccessParams) (token string, err error)
-    VerifyAccess(token string) (*AccessClaims, error)
-    SignRefresh(p SignRefreshParams) (token string, err error)
-    VerifyRefresh(token string) (*RefreshClaims, error)
+    SignAccess(ctx context.Context, p SignAccessParams) (token string, err error)
+    VerifyAccess(ctx context.Context, token string) (*AccessClaims, error)
+    SignRefresh(ctx context.Context, p SignRefreshParams) (token string, err error)
+    VerifyRefresh(ctx context.Context, token string) (*RefreshClaims, error)
 
     // PolicyOf 從 client_id 取對應 ClientPolicy；找不到回 ErrInvalidClient。
-    PolicyOf(clientID string) (config.ClientPolicy, error)
+    PolicyOf(ctx context.Context, clientID string) (config.ClientPolicy, error)
 }
 
 // NewManager 由 cfg 構造 Manager。
 //
-// 簽章：一律使用 cfg.Secret / cfg.RefreshSecret。
+// 簽章：一律使用 cfg.Secret / cfg.RefreshSecret，演算法固定 HS256。
 //
 // 驗證：
+//   0. **Keyfunc 鎖定演算法**：進入簽章驗證之前，先檢查 `token.Method.(*jwt.SigningMethodHMAC)` 且
+//      `token.Method.Alg() == "HS256"`，不符直接回 ErrInvalidToken。
+//      此步驟必要，防兩種攻擊：
+//      - `alg=none`：攻擊者偽造 `{"alg":"none"}` header 與任意 payload；若 keyfunc 不檢查 alg，
+//        部分 jwt lib 會視為「無需簽章」直接通過。
+//      - **alg confusion**：攻擊者用 server 的 HMAC secret 當「公鑰」配 RS256 簽 token；
+//        若 keyfunc 不檢查 alg，server 會誤走 HMAC 路徑用 secret 字串當 key 驗 RS256 通過。
 //   1. 簽章先試主 secret，失敗再試 PreviousSecret / PreviousRefreshSecret（若已設定）→ 都失敗回 ErrInvalidToken
 //   2. iss 必須 == cfg.Issuer → 不符回 ErrInvalidToken
 //   3. aud 必須 ∈ 已知 client_id 白名單 → 不符回 ErrInvalidToken
 //      白名單由 NewManager 構造時從 cfg.ClientPolicies 的 keys 捕捉並存入 manager 內部 set；
 //      未知 client_id 在 login 早就被擋（ErrInvalidClient），不會出現在已簽出的 token 內，
 //      此檢查為防禦性深度檢查（例如 ClientPolicies 設定縮減後，舊 token aud 已失效）。
-//   4. exp > now → 過則 ErrTokenExpired
-//   5. (Refresh only) abs_exp > now → 過則 ErrAbsoluteExpired
+//   4. **時間 claim 含 leeway**：以 `cfg.ClockSkewLeeway`（預設 30s，見 §4.2）容忍多副本部署的時鐘漂移：
+//      - `exp + leeway > now`           → 過則 ErrTokenExpired
+//      - `nbf - leeway ≤ now`（NotBefore 不可在未來） → 違反則 ErrInvalidToken
+//      - `iat - leeway ≤ now`（IssuedAt 不可在未來） → 違反則 ErrInvalidToken
+//      無 leeway 時，NTP 抖動 1–2 秒會隨機讓部分 request 收到 401，難以追蹤。
+//   5. (Refresh only) `abs_exp + leeway > now` → 過則 ErrAbsoluteExpired
 //
 // Secret rotation grace 期間（部署新 secret 到 JWT_SECRET，把舊值搬到 JWT_SECRET_PREVIOUS，
 // 等所有舊 token 自然過期，最後清掉 JWT_SECRET_PREVIOUS）詳見 ADR 007「Secret Rotation」段。
+// **iss / aud 永遠以最新 cfg 為準，不隨 secret rotation 寬鬆** — rotation 只涵蓋 secret，
+// 不涵蓋 issuer / audience。
 func NewManager(cfg config.JWTConfig) Manager
 ```
 
@@ -1043,7 +1269,13 @@ func NewManager(cfg config.JWTConfig) Manager
 ```go
 // state = FamilyStore.Rotate 回傳的 *FamilyState（GraceHit 時為當前 state，未變更）
 
-accessJWT, _ := jwtManager.SignAccess(jwt.SignAccessParams{
+// 防禦性 nil check：依 §7.4 invariant，Rotated / GraceHit 必非 nil；
+// 若收到 nil（Lua bug / state_json 空），視為 ErrFamilyNotFound 走 login，禁止 panic。
+if state == nil {
+    return ErrFamilyNotFound
+}
+
+accessJWT, err := jwtManager.SignAccess(ctx, jwt.SignAccessParams{
     UserID:   state.UserID,
     UserType: jwt.UserType(state.UserType),  // 直接從 state 取，login 時已固化
     Role:     jwt.Role(state.Role),          // 同上
@@ -1052,9 +1284,17 @@ accessJWT, _ := jwtManager.SignAccess(jwt.SignAccessParams{
     JTI:      uuid.NewString(),              // access token 每次都新
     TTL:      cfg.JWT.AccessTTL,
 })
+if err != nil {
+    return err
+}
 
-policy, _ := jwtManager.PolicyOf(state.ClientID)
-refreshJWT, _ := jwtManager.SignRefresh(jwt.SignRefreshParams{
+policy, err := jwtManager.PolicyOf(ctx, state.ClientID)
+if err != nil {
+    // ClientPolicies 設定縮減後 state.ClientID 可能已失效（ErrInvalidClient）；
+    // fail-closed 走 login，禁止用 zero-value policy 簽出 TTL=0 的 refresh。
+    return ErrInvalidToken
+}
+refreshJWT, err := jwtManager.SignRefresh(ctx, jwt.SignRefreshParams{
     UserID:      state.UserID,
     UserType:    jwt.UserType(state.UserType),
     FamilyID:    state.FamilyID,
@@ -1063,6 +1303,9 @@ refreshJWT, _ := jwtManager.SignRefresh(jwt.SignRefreshParams{
     TTL:         policy.RefreshTTL,                         // 重新計算
     AbsoluteExp: time.Unix(state.AbsoluteExp, 0),           // 從 state 取，不可信任 client JWT
 })
+if err != nil {
+    return err
+}
 
 // 回 200，response shape 與 Rotated 完全相同
 ```
@@ -1170,6 +1413,25 @@ func (u UserType) IsValid() bool {
 
 // AuthMiddleware 驗證 access token，將 claims 注入 context（透過 SetClaims）。
 // blacklist 為「強制踢人」用的短期黑名單，非常態查詢；hot path 預期黑名單 miss。
+//
+// 處理流程：
+//   1. 從 Authorization header 取 "Bearer <token>"
+//      - 規範化：去除前後空白；prefix 比對「Bearer 」case-insensitive，僅接受單一空白
+//      - header 缺 / 前綴錯 / token 部分為空 → 401 `unauthorized`
+//   2. jwtManager.VerifyAccess(token) — 依錯誤 sentinel 對應 HTTP error code：
+//      - ErrTokenExpired                       → 401 `token_expired`   （前端 retry refresh）
+//      - ErrInvalidToken（含 alg/iss/aud/簽章/nbf/iat）→ 401 `invalid_token`   （前端走 login）
+//      - 其他不預期 error                       → 401 `unauthorized`
+//   3. blacklist.IsBlacklisted(ctx, claims.ID):
+//      - (true, nil)  → 401 `session_revoked`（middleware 內直接寫 error code，不過 HandleError；見 §12.4）
+//      - (false, nil) → 通過
+//      - (false, err) → **fail-open**：log warn + metrics.AuthBlacklistErrors.Inc() + 通過
+//   4. SetClaims(c, claims) + c.Next()
+//
+// 設計權衡（fail-open vs fail-closed）：
+//   黑名單 hit 是稀有事件（管理員手動踢、改密碼、family revoke）；
+//   Redis 抖動更常見。fail-open 容忍 short-term miss，避免「Redis 抖一下整個 API 全打 401」。
+//   若安全模型要求 fail-closed，改為 (false, err) → 401 + 切換 metric 即可，介面不變。
 func AuthMiddleware(jwtManager Manager, blacklist redis.AccessTokenBlacklist) gin.HandlerFunc
 
 // RequireRole 驗證 token role 是否符合，需接在 AuthMiddleware 之後。
@@ -1221,7 +1483,7 @@ Member 隔離邏輯統一抽成 middleware，**禁止散落於各 service**。
 
 // RequireOwnership 確保 URL param 指定的目標 ID 屬於當前登入者。
 // 對 UserType == cms 自動放行（由 RequireRole 控制權限）。
-// 對 UserType == member 嚴格比對 claims.UserID == c.Param(paramName)，不符回 403。
+// 對 UserType == member 嚴格比對 claims.UserID() == c.Param(paramName)，不符回 403。
 //
 // Sanity check：path param 若不存在（拼錯 paramName 或 router 沒掛對應 :param），
 // c.Param 回 ""，與任何 UserID 比較都不等 → 永遠 403，會造成「靜默全 forbidden」的詭異 bug。
@@ -1248,7 +1510,7 @@ func RequireOwnership(paramName string) gin.HandlerFunc {
             abortJSON(c, http.StatusForbidden, "forbidden")
             return
         }
-        if claims.UserID != target {
+        if claims.UserID() != target {
             abortJSON(c, http.StatusForbidden, "forbidden")
             return
         }
@@ -1290,6 +1552,140 @@ manageGroup.GET("/reports", reportHandler.Get)
 | CMS idle timer | 監聽 mouse/keyboard，15 分鐘無互動 → 呼叫 `/auth/logout` + 清掉記憶體 token + 跳登入頁 |
 | Login 必填 | `client_id`（`cms-web` / `public-web` / `ios-app` / `android-app`） |
 
+### 8.9 AuthService 介面
+
+Auth 業務邏輯統一入口，由 `internal/handler/auth` 呼叫。**禁止 handler 直接呼叫 `FamilyStore` / `Hasher` / `Manager` / `Blacklist`**，避免邏輯散落於各 endpoint。
+
+> **設計取捨**：
+> - **Register 僅開放給 CMS user**（`client_id == "cms-web"` 才放行，其餘 → `ErrInvalidClient`），新註冊預設 `role = user`。Member 註冊機制待後續業務 spec（見 §6.5）。`role` 升降權留給後續業務 spec。
+> - **Register 成功回 201 + 空 body，不直接簽 token**；前端註冊完必須再打一次 `/auth/login`。理由：把「建立帳號」與「建立 session」職責分離，未來加入「註冊後須 email 驗證才能登入」等流程不必改 service 簽章。
+> - **Login 依 `client_id` 路由表**：`cms-web` → `cms_users`、`public-web` / `ios-app` / `android-app` → `members`。未來若 CMS 也需手機 App，再評估改為 `LoginInput.UserType` 顯式傳入。
+> - 所有 method 第一參數均接 `context.Context`，對齊 §1「所有 service / repository 簽章必接 ctx」原則。
+> - **`RevokeAll` 必須把當前 access JTI 加入黑名單**（ttl = 剩餘 exp，與 Logout 一致），否則「全裝置登出」後當前 access token 仍可用到自然過期（最長 15 分鐘）。
+
+#### 介面定義
+
+```go
+// internal/service/auth/auth_service.go
+
+type AuthService interface {
+    // Register：建立 CMS user，預設 role = "user"。
+    //   ErrInvalidClient  — client_id != "cms-web"
+    //   ErrWeakPassword   — 弱密碼（見下方規則）
+    //   ErrUsernameTaken  — username 已被 cms_users 占用（依 §12.5 unique 23505 包裝）
+    // 不簽 token、不建立 session；caller 另打 /auth/login。
+    Register(ctx context.Context, in RegisterInput) error
+
+    // Login：依 client_id 路由到 cms_users / members，驗帳密 → 開新 family → 簽 token pair。
+    //   ErrInvalidClient  — client_id 不在白名單
+    //   ErrUnauthorized   — 帳密錯（含 user 不存在；不洩漏哪個錯）
+    Login(ctx context.Context, in LoginInput) (*TokenPair, error)
+
+    // Refresh：依 §8.2 / §8.3.1 做 rotation；錯誤對應 §12.4 sentinel：
+    //   ErrTokenExpired / ErrAbsoluteExpired / ErrInvalidToken / ErrReplayDetected / ErrFamilyNotFound
+    Refresh(ctx context.Context, in RefreshInput) (*TokenPair, error)
+
+    // Logout：廢當前 family + 把當前 access JTI 加入黑名單。
+    //   ErrInvalidInput — in.RefreshToken 非空且 fid 與 access claims 不一致
+    Logout(ctx context.Context, in LogoutInput) error
+
+    // ListSessions：回當前 user 全部 family，currentFID 命中者 IsCurrent=true；
+    // 發現孤兒 fid 順手清（lazy cleanup）。
+    ListSessions(ctx context.Context, userID, currentFID string) ([]SessionInfo, error)
+
+    // RevokeSession：撤銷指定 fid。
+    //   ErrUseLogoutInstead — targetFID == currentFID（請改打 /auth/logout）
+    //   ErrNotFound         — family 不存在
+    RevokeSession(ctx context.Context, userID, currentFID, targetFID string) error
+
+    // RevokeAll：撤銷當前 user 所有 family，並把當前 access JTI 加入黑名單
+    // （ttl = currentAccessRemaining，與 Logout 一致）。
+    RevokeAll(ctx context.Context, userID, currentAccessJTI string, currentAccessRemaining time.Duration) error
+}
+```
+
+#### Input / Output 型別
+
+```go
+type RegisterInput struct {
+    Username string `validate:"required,min=3,max=64"`
+    Password string `validate:"required,min=8,max=256"`  // 額外 weak password 檢查見下
+    ClientID string `validate:"required,oneof=cms-web public-web ios-app android-app"`
+}
+
+type LoginInput struct {
+    Username  string `validate:"required,min=1,max=128"`
+    Password  string `validate:"required,min=1,max=256"`
+    ClientID  string `validate:"required,oneof=cms-web public-web ios-app android-app"`
+    IP        string  // handler 從 c.ClientIP() 取（依 TrustedProxies §9.2）
+    UserAgent string  // handler 從 c.Request.UserAgent() 取
+}
+
+type RefreshInput struct {
+    RefreshToken string `validate:"required"`
+    IP           string
+    UserAgent    string
+}
+
+type LogoutInput struct {
+    UserID       string
+    FamilyID     string
+    AccessJTI    string
+    AccessRemain time.Duration  // 加入黑名單 ttl
+    RefreshToken string         // optional；非空時驗 fid 與 access claims 一致
+}
+
+type TokenPair struct {
+    AccessToken      string
+    RefreshToken     string
+    TokenType        string  // "Bearer"
+    ExpiresIn        int     // access TTL 秒
+    RefreshExpiresIn int     // refresh TTL 秒
+}
+
+type SessionInfo struct {
+    FID           string
+    ClientID      string
+    DeviceLabel   string    // UA parser 產生（"Chrome 120 on macOS"）
+    IPAtLogin     string
+    CreatedAt     time.Time
+    LastRotatedAt time.Time
+    IsCurrent     bool
+}
+```
+
+#### 弱密碼規則
+
+`Register` 在 `Hasher.Hash` 之前先過：
+
+| 規則 | 拒絕條件 |
+|---|---|
+| 最小長度 | `len(password) < 8` |
+| 字符多樣性 | 不含任何字母 **或** 不含任何數字 |
+
+不符 → `ErrWeakPassword`（HTTP 422 `weak_password`，見 §12.4）。
+
+> **demo 刻意寬鬆**：未加大小寫混合、特殊字元、字典檢查、洩漏密碼比對。後續導入 zxcvbn / NIST SP 800-63B 時 replace 規則即可，介面不變。
+> **Seed admin（§13.5）不走此檢查**（migration SQL 直接 INSERT bcrypt hash，bypass application validation）；預設密碼 `admin123` 達到「8 字元 + 字母 + 數字」最低底線，剛好通過。
+
+#### Constructor 與依賴
+
+```go
+func NewAuthService(
+    cmsUserRepo repository.CMSUserRepository,
+    memberRepo  repository.MemberRepository,
+    hasher      hasher.Hasher,
+    jwtManager  jwt.Manager,
+    familyStore redis.FamilyStore,
+    blacklist   redis.AccessTokenBlacklist,
+    auditLogger audit.Logger,
+) AuthService
+```
+
+UA 解析（`mileusna/useragent`）為 AuthService 內部實作細節，不在 constructor signature。
+
+> Audit log 對應事件詳見 §18.3.4（已涵蓋 Register / Login / Refresh / Logout / Sessions 完整事件清單）。
+
 ---
 
 ## 9. Gin Server 組裝
@@ -1305,12 +1701,21 @@ main()
   ├── rdb, _ := redis.Connect(cfg.Redis)
   ├── sqlDB, _ := db.DB()
   ├── metrics.Init(sqlDB, Version, Commit)       ← 含 DBStatsCollector / BuildInfo
-  ├── wire up repositories → services → handlers
-  ├── router.Setup(...)
-  └── server.RunWithGracefulShutdown(...)
+  ├── auditLogger, _ := audit.NewZapLogger(cfg.Log.AuditPath)   ← 獨立 sink；Shutdown 時 Sync（§14.2）
+  ├── 建立共享 auth 元件：
+  │      jwtManager  := jwt.NewManager(cfg.JWT)
+  │      hasher      := hasher.NewBcrypt(cfg.JWT.BcryptCost)
+  │      familyStore := redis.NewFamilyStore(rdb, cfg.JWT)
+  │      familyStore.PreloadScripts(ctx)         ← Lua SCRIPT LOAD（§7.4），失敗 fatal
+  │      blacklist   := redis.NewAccessTokenBlacklist(rdb)       ← §7.3
+  │      rlStore, _  := ratelimit.NewRedisStore(rdb, "ratelimit") ← §15.4
+  ├── wire up repositories → services（AuthService 注入 auditLogger 等）→ handlers
+  ├── router.Setup(...)（rlStore 注入 IPMiddleware / UserMiddleware）
+  └── server.RunWithGracefulShutdown(...)        ← shutdown 順序見 §14.2
 ```
 
 > `Version` / `Commit` 由 `go build -ldflags "-X main.Version=v1.2.3 -X main.Commit=$(git rev-parse HEAD)"` 注入。
+> Shutdown 順序與 audit `Sync()`、blacklist / familyStore / rdb / db close 的處理見 §14.2。
 
 ### 9.2 Router 結構
 
@@ -1340,7 +1745,7 @@ r.Use(
     cors.New(cors.Config{
         AllowOrigins:     cfg.Server.AllowedOrigins,
         AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-        AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Request-ID"},
+        AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Accept-Language", "Authorization", "X-Request-ID"},
         ExposeHeaders:    []string{"X-Request-ID", "Retry-After"},
         AllowCredentials: cfg.Server.AllowCredentials,
         MaxAge:           12 * time.Hour,
@@ -1354,6 +1759,12 @@ r.GET("/health", healthHandler.Live)
 r.GET("/health/ready", healthHandler.Ready)
 if cfg.Metrics.Enabled {
     r.GET(cfg.Metrics.Path, gin.WrapH(promhttp.Handler()))
+}
+
+// API schema HTML（由 `redocly build-docs schema/openapi.yaml -o docs/api.html` 預先產生）
+// — 僅在非 prod 環境暴露；prod 不對外公開 schema，避免攻擊者免費取得 endpoint inventory（§3.2）
+if cfg.App.Env != "prod" {
+    r.StaticFile("/docs", "./docs/api.html")
 }
 
 api := r.Group("/api/v1")
@@ -1416,13 +1827,23 @@ func MaxBodyBytes(n int64) gin.HandlerFunc {
 // pkg/httpx/secure_headers.go
 //
 // SecureHeaders 包裝 unrolled/secure。
+//
+// 預設套用於**所有路由**（API 為純 JSON，本來就不該載入子資源、被嵌入 iframe、或被瀏覽器
+// 自動取用 camera/mic 等 sensor），故走 default-deny CSP 與全關 PermissionsPolicy。
+// 若日後新增 /docs 等需 render HTML 的端點，**必須**用獨立 middleware 套寬鬆 CSP 覆寫
+// （例如 `default-src 'self'; script-src 'self' 'nonce-...'`），不要全域放寬。
+//
 // HSTS 僅在 staging / prod 啟用 — dev 啟用會強迫瀏覽器把 localhost 升 HTTPS，
 // 一次踩到就要清整個 STS 快取（每個開發環境瀏覽器都要清），體驗極差。
 func SecureHeaders(env string) gin.HandlerFunc {
     opts := secure.Options{
-        FrameDeny:          true,
-        ContentTypeNosniff: true,
-        ReferrerPolicy:     "no-referrer",
+        FrameDeny:             true,
+        ContentTypeNosniff:    true,
+        ReferrerPolicy:        "no-referrer",
+        // CSP：JSON API 預設不該載任何資源；frame-ancestors 'none' 取代 X-Frame-Options（同 FrameDeny 重複，現代瀏覽器優先讀 CSP）
+        ContentSecurityPolicy: "default-src 'none'; frame-ancestors 'none'",
+        // 全關 sensor / payment / fullscreen 等 Permissions API；XSS 注入也無法觸發
+        PermissionsPolicy:     "camera=(), microphone=(), geolocation=(), payment=(), fullscreen=()",
     }
     if env == "staging" || env == "prod" {
         opts.STSSeconds = 31536000
@@ -1482,6 +1903,96 @@ func WriteError(c *gin.Context, status int, code string) {
 - `pkg/ratelimit.{IP,User}Middleware`
 - `pkg/httpx.GinRecovery`（v1.9 已從 `pkg/logger` 搬入 `pkg/httpx`）
 
+### 9.5 Auth Handler 實作骨架
+
+7 個 endpoint 依 §3.4 對齊 OpenAPI；service 層 input / output 結構詳見 §8.9；錯誤映射由 `handler.HandleError`（§12.3）統一處理。本節給最關鍵的 3 個完整骨架，其餘 4 個以表格摘要重點。
+
+```go
+// internal/handler/auth/handler.go
+
+type Handler struct {
+    svc service.AuthService
+}
+
+func NewHandler(svc service.AuthService) *Handler { return &Handler{svc: svc} }
+
+// Register — POST /auth/register（公開；§8.9）
+func (h *Handler) Register(c *gin.Context) {
+    var body schema.RegisterRequest
+    if err := c.ShouldBindJSON(&body); err != nil {
+        handler.HandleError(c, err)
+        return
+    }
+    if err := h.svc.Register(c.Request.Context(), service.RegisterInput{
+        Username: body.Username,
+        Password: body.Password,
+        ClientID: body.ClientID,
+    }); err != nil {
+        handler.HandleError(c, err)
+        return
+    }
+    c.Status(http.StatusCreated)  // 201 無 body；caller 須另打 /auth/login
+}
+
+// Login — POST /auth/login（公開）
+func (h *Handler) Login(c *gin.Context) {
+    var body schema.LoginRequest
+    if err := c.ShouldBindJSON(&body); err != nil {
+        handler.HandleError(c, err)
+        return
+    }
+    pair, err := h.svc.Login(c.Request.Context(), service.LoginInput{
+        Username:  body.Username,
+        Password:  body.Password,
+        ClientID:  body.ClientID,
+        IP:        c.ClientIP(),                  // 依 TrustedProxies（§9.2）
+        UserAgent: c.Request.UserAgent(),
+    })
+    if err != nil {
+        handler.HandleError(c, err)
+        return
+    }
+    handler.OK(c, dto.FromTokenPair(pair))
+}
+
+// Logout — POST /auth/logout（需 access token；body optional）
+func (h *Handler) Logout(c *gin.Context) {
+    claims, _ := jwt.GetClaims(c)  // AuthMiddleware 保證存在
+    var body schema.LogoutRequest
+    _ = c.ShouldBindJSON(&body)    // optional body；解析失敗忽略
+
+    err := h.svc.Logout(c.Request.Context(), service.LogoutInput{
+        UserID:       claims.UserID(),
+        FamilyID:     claims.FamilyID,
+        AccessJTI:    claims.ID,                            // RegisteredClaims.ID = jti
+        AccessRemain: time.Until(claims.ExpiresAt.Time),    // 加入黑名單 ttl
+        RefreshToken: body.RefreshToken,
+    })
+    if err != nil {
+        handler.HandleError(c, err)
+        return
+    }
+    c.Status(http.StatusNoContent)
+}
+```
+
+#### 其他 4 個 endpoint 重點
+
+| Endpoint | 輸入解析 | Service 呼叫 | 成功回應 |
+|---|---|---|---|
+| `Refresh` (POST `/auth/refresh`) | `body.refresh_token` + `c.ClientIP()` + UA | `svc.Refresh(ctx, RefreshInput{...})` | `handler.OK(c, dto.FromTokenPair(pair))` |
+| `ListSessions` (GET `/auth/sessions`) | `claims.UserID()` + `claims.FamilyID`（當前 fid） | `svc.ListSessions(ctx, userID, currentFID)` | `handler.OKList(c, dto.FromSessionInfoList(infos), nil)` |
+| `RevokeSession` (DELETE `/auth/sessions/:fid`) | `c.Param("fid")` + `claims.UserID()` + `claims.FamilyID` | `svc.RevokeSession(ctx, userID, currentFID, targetFID)` | `c.Status(204)` |
+| `RevokeAllSessions` (POST `/auth/sessions/revoke-all`) | `claims.UserID()` + `claims.ID` + `time.Until(claims.ExpiresAt.Time)` | `svc.RevokeAll(ctx, userID, jti, remain)` | `c.Status(204)` |
+
+#### 共用注意事項
+
+- **Bearer 解析**：handler **不**自己解析 `Authorization` header；`AuthMiddleware`（§8.5）已驗證並 `SetClaims`，handler 直接 `jwt.GetClaims(c)`。
+- **IP / UA 取得**：一律 `c.ClientIP()`（依 `TrustedProxies`，見 §9.2）與 `c.Request.UserAgent()`；**禁止**直接讀 `c.GetHeader("X-Forwarded-For")` 等 raw header。
+- **ctx 傳遞**：所有 service 呼叫第一參數均為 `c.Request.Context()`；**禁止用 `context.Background()`**（會丟失 request_id、cancellation、deadline）。
+- **錯誤回應**：一律 `handler.HandleError(c, err)`，由 §12.3 統一映射；handler 內**禁止**直接 `c.JSON(401, ...)`。
+- **path collision 警示**：`POST /auth/sessions/revoke-all` 與 `DELETE /auth/sessions/:fid` 共存於 gin trie；method 不同不衝突（§9.2 註）。若日後新增 `GET /auth/sessions/revoke-all` 會與 `:fid` 衝突，務必先重命名（建議 `_actions/revoke-all`）。
+
 ---
 
 ## 10. Response
@@ -1516,6 +2027,9 @@ type ErrorResponse struct {
     Details   []FieldError `json:"details,omitempty"` // 僅 validation 錯誤時出現
 }
 
+// Meta 對應 OpenAPI 的 PageMeta schema（schema/openapi.yaml）。
+// Go 端使用短名 Meta；OpenAPI 為避免與其他 envelope meta 概念衝突，命名 PageMeta。
+// 兩邊 JSON wire format 皆為小寫 "meta"（envelope 欄位名），確保 kin-openapi runtime 驗證通過。
 type Meta struct {
     Page     int   `json:"page"`
     PageSize int   `json:"page_size"`
@@ -1572,6 +2086,7 @@ c.JSON(http.StatusOK,
 - `/health` 不打 DB / Redis，供 load balancer 高頻輪詢；`/health/ready` 做深度連線檢查。
 - 兩端點均在 `GinLogger` 的 skipPaths 中（見 §5.3），避免污染日誌。
 - **`/health/ready` 必須驗證 FamilyStore Lua script 已預載**：避免冷啟動首次 refresh 才踩到 `NOSCRIPT` 重試 latency。`FamilyStore` 啟動時呼叫 `PreloadScripts()`，`/health/ready` 探測該狀態為 ready。
+- **回應 shape 刻意不走 §10 envelope**：health 為 ops 端點（§3.4，不在 OpenAPI 契約範圍），k8s probe 只看 HTTP status code；body 為人類 debug 用，free-form `{"status": <map>}` 比強塞 `{success, request_id, error, ...}` 直觀。強行對齊會把 ops 端點拉進業務契約，與 §3.4 的設計相違。
 
 ### 11.2 端點定義
 
@@ -1811,9 +2326,12 @@ func validationMessage(fe validator.FieldError) string {
 | `apperr.ErrInvalidToken` | `errors.Is` | 401 | `invalid_token` | 簽章 / iss / aud 失敗；走 login |
 | `apperr.ErrReplayDetected` | `errors.Is` | 401 | `replay_detected` | 重放偵測；前端應 UI 提示「異常登入」並走 login |
 | `apperr.ErrFamilyNotFound` | `errors.Is` | 401 | `session_not_found` | family 已被廢 / 過期 |
+| AuthMiddleware（blacklist hit） | `IsBlacklisted == true` | 401 | `session_revoked` | 強制踢人（管理員、改密碼、family revoke）；middleware 內直接寫，不過 HandleError |
 | `apperr.ErrForbidden` | `errors.Is` | 403 | `forbidden` | |
 | `apperr.ErrNotFound` | `errors.Is` | 404 | `resource not found` | |
 | `apperr.ErrConflict` | `errors.Is` | 409 | `resource already exists` | |
+| `apperr.ErrUsernameTaken` | `errors.Is` | 409 | `username_taken` | Register 時 cms_users 已存在同名（依 §12.5 unique 23505 包裝為此 sentinel；獨立於 generic conflict） |
+| `apperr.ErrWeakPassword` | `errors.Is` | 422 | `weak_password` | Register 弱密碼檢查不通過（規則見 §8.9） |
 | `apperr.ErrTooManyRequests` | `errors.Is` | 429 | `too many requests` | |
 | 其他 | default | 500 | `internal server error` | 記錄至 logger |
 
@@ -1844,15 +2362,31 @@ if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 - 啟動時自動執行 pending migrations（`migrate.Up()`），失敗則 fatal 退出。
 - 多 instance 同時啟動時，golang-migrate 自動透過 PostgreSQL advisory lock (`pg_advisory_lock`) 序列化執行：先取得鎖的 instance 跑 migration，其他 instance 阻塞等候直到鎖釋放後讀到「無 pending」狀態。無需應用層額外重試。
 
+> **多應用共用同一 DB 的注意事項**（本專案目前**一個應用獨佔一個 DB**，不會遇到；但 spec 留註以防共用 DB 重構時被忽略）：
+> golang-migrate 預設以 search_path 第一個 schema（通常是 `public`）的名稱 hash 作為 advisory lock id，並以 `schema_migrations` 作為紀錄表。兩個應用共用同一 DB + schema 會：
+> 1. **lock id 相同 → 啟動互卡**（lock 等待 timeout 由 migrationStatementTimeout 5m 約束，仍會看到明顯延遲）
+> 2. **共用 schema_migrations → 版本號互踩**（A 的 000005 跟 B 的 000005 互蓋）
+>
+> 解決方式（依嚴重度由低到高）：
+> - 各應用 query string 加 `x-migrations-table=<app>_schema_migrations` — 解決紀錄表衝突，但 lock 仍互卡
+> - **推薦：各應用獨立 schema**（`CREATE SCHEMA playerledger; SET search_path=playerledger,public;`），lock id 自然不同
+> - 各應用獨立 DB — 最徹底，本專案目前採此方案
+
+> **建議 integration test**（§19）：spawn 兩個 process 同時啟動，驗證只有一個跑 migration、另一個阻塞後讀到「無 pending」狀態，且 schema_migrations 內版本號沒有重複套用。
+
 ### 13.2 腳本命名範例
 
 ```
 migrations/
-├── 000001_create_players.up.sql
-├── 000001_create_players.down.sql
-├── 000002_create_transactions.up.sql
-└── 000002_create_transactions.down.sql
+├── 000001_create_cms_users.up.sql
+├── 000001_create_cms_users.down.sql
+├── 000002_create_members.up.sql
+├── 000002_create_members.down.sql
+├── 000003_seed_initial_admin.up.sql
+└── 000003_seed_initial_admin.down.sql
 ```
+
+> Auth 必需的兩張表（`cms_users` / `members`）與 dev/demo 預設 admin（`admin / admin123`）的完整 SQL 範例見 §13.5。業務表（如 `players`、`transactions`）從 `000004` 開始編號。
 
 ### 13.3 執行方式
 
@@ -1949,6 +2483,84 @@ migrate -path ./migrations \
 migrate create -ext sql -dir ./migrations -seq create_transactions
 ```
 
+### 13.5 Auth 表 migration 與 seed admin
+
+對應 §6.5 model 與 §8.9 AuthService 的 SQL；放入 `migrations/` 即由 §13.3 的 embed.FS 自動套用。
+
+#### 結構 migration
+
+```sql
+-- migrations/000001_create_cms_users.up.sql
+CREATE TABLE cms_users (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username      VARCHAR(64) NOT NULL,
+    password_hash VARCHAR(72) NOT NULL,
+    role          VARCHAR(16) NOT NULL CHECK (role IN ('admin','user','viewer')),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at    TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX uq_cms_users_username ON cms_users(username) WHERE deleted_at IS NULL;
+
+-- migrations/000001_create_cms_users.down.sql
+DROP TABLE IF EXISTS cms_users;
+```
+
+```sql
+-- migrations/000002_create_members.up.sql
+CREATE TABLE members (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username      VARCHAR(64) NOT NULL,
+    password_hash VARCHAR(72) NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at    TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX uq_members_username ON members(username) WHERE deleted_at IS NULL;
+
+-- migrations/000002_create_members.down.sql
+DROP TABLE IF EXISTS members;
+```
+
+#### Seed initial admin（dev / demo only）
+
+雞生蛋問題：CMS 自註冊預設 role 為 `user`，沒有任何路徑能產生第一個 `admin`，故 dev/demo 透過 migration seed 預埋一個。**production 部署前必須改密碼或刪此 seed migration**（見下方規範）。
+
+```sql
+-- migrations/000003_seed_initial_admin.up.sql
+-- 預設帳密：admin / admin123（DEMO ONLY；prod 部署前見 §13.5 末段「Prod 部署前必做」）。
+-- password_hash 為 bcrypt(admin123, cost=10) 的輸出；每次重算 salt 不同，hash 不同。
+-- 重算方法（任選其一）：
+--   htpasswd -bnBC 10 "" admin123 | tr -d ':\n'
+--   Go: bcrypt.GenerateFromPassword([]byte("admin123"), 10)
+--
+-- NOT EXISTS 子查詢保 idempotent — 手動重跑或多副本同時啟動都只會插入一次。
+INSERT INTO cms_users (username, password_hash, role)
+SELECT 'admin', '$2a$10$REPLACE_WITH_BCRYPT_HASH_OF_admin123', 'admin'
+WHERE NOT EXISTS (
+    SELECT 1 FROM cms_users WHERE username = 'admin' AND deleted_at IS NULL
+);
+
+-- migrations/000003_seed_initial_admin.down.sql
+DELETE FROM cms_users WHERE username = 'admin';
+```
+
+> **為何 bcrypt cost 固定 10，不從 `JWT_BCRYPT_COST` 取**：
+> Migration SQL 在 application boot 之前（甚至可能由獨立 CLI）執行，讀不到應用 config；且 seed hash 寫死後就無法因環境改而重算。一律用 cost=10（業界 default），對 demo 帳號的成本可忽略。後續 application 透過 `Hasher` 寫入的密碼仍走 `JWTConfig.BcryptCost` 配置。
+
+> **為何用 `NOT EXISTS` 而非 `ON CONFLICT ... DO NOTHING`**：
+> PostgreSQL 支援 partial unique index 的 ON CONFLICT，但 predicate 必須與 index 的 `WHERE` 完全匹配；`NOT EXISTS` 子查詢可讀性更高、與索引解耦，partial unique index 改動時不會默默壞掉。
+
+#### Prod 部署前必做
+
+| 步驟 | 動作 |
+|---|---|
+| 1 | 在 CI 或 prod build pipeline 內，把 `000003_seed_initial_admin.up.sql` 內的 `admin123` hash 替換為真實 bcrypt 輸出，或直接刪除此 migration 改用手動 `INSERT` |
+| 2 | 若已部署過 demo seed，prod 第一次啟動前用 `UPDATE cms_users SET password_hash = '<new_bcrypt>' WHERE username = 'admin';` 改密碼 |
+| 3 | 任一方式都必須在第一次 prod 對外開放前完成，否則 `admin / admin123` 會出現在 prod |
+
+> **CI 守門建議**：在 `lint` job 加一個 grep 規則 — 若 prod build 仍含 `REPLACE_WITH_BCRYPT_HASH_OF_admin123` placeholder 則 fail，避免忘記替換。
+
 ---
 
 ## 14. Graceful Shutdown
@@ -2019,7 +2631,7 @@ _ = logger.L().Sync() // flush buffered log entries
 - 使用 `ulule/limiter` + Redis store，支援分散式多節點限流。
 - **兩層限流**（見 §9.2 router）：
   - 外層 `IPMiddleware` 掛在 `/api/v1`：以 `c.ClientIP()` 為 key，匿名與已認證請求都受限，擋暴力濫用
-  - 內層 `UserMiddleware` 掛在 `AuthMiddleware` 之後：以 `claims.UserID` 為 key，避免共享 IP（NAT、辦公室）誤傷合法使用者；額度可較寬鬆
+  - 內層 `UserMiddleware` 掛在 `AuthMiddleware` 之後：以 `claims.UserID()` 為 key，避免共享 IP（NAT、辦公室）誤傷合法使用者；額度可較寬鬆
 - 超出限制回傳 `429 Too Many Requests`，`Retry-After` header 告知重試時間。
 - 限流開關與參數由 `RateLimitConfig.IP` / `RateLimitConfig.User` 分別控制。
 - **Fail-open 策略**：limiter 本身故障（Redis 不可用）時放行請求，避免限流元件成為單點故障；故障時記 warn 並由 metrics 追蹤。
@@ -2037,7 +2649,7 @@ func IPMiddleware(period time.Duration, limit int64, store limiter.Store) gin.Ha
     })
 }
 
-// UserMiddleware 以 claims.UserID 為限流 key，必須掛在 AuthMiddleware 之後
+// UserMiddleware 以 claims.UserID() 為限流 key，必須掛在 AuthMiddleware 之後
 // 若無 claims（middleware 順序錯）視為 misconfiguration，記 error + metric 後 fail-open。
 // metric `ratelimit_misconfigured_total` 應在告警系統設「> 0 即 page」規則，
 // 避免靜默 bypass 導致登入後流量無 user-level 限流保護。
@@ -2053,7 +2665,7 @@ func UserMiddleware(period time.Duration, limit int64, store limiter.Store) gin.
             return "" // 空 key → newMiddleware 視為 fail-open
         }
         // hash tag {userID} 對齊 §7.1 規範
-        return "ratelimit:user:{" + claims.UserID + "}"
+        return "ratelimit:user:{" + claims.UserID() + "}"
     })
 }
 
@@ -2081,7 +2693,14 @@ func newMiddleware(period time.Duration, limit int64, store limiter.Store,
             return
         }
         if ctx.Reached {
-            c.Header("Retry-After", strconv.FormatInt(ctx.Reset, 10))
+            // ulule/limiter 的 ctx.Reset 是「window 重置時的 unix timestamp（秒）」，
+            // 不是 HTTP `Retry-After` header 規範的「秒數」。直接寫 ctx.Reset 客戶端會
+            // 把時戳當秒數，誤等數十年。下方計算實際剩餘秒數，下限 1 保證至少 1 秒。
+            retryAfter := ctx.Reset - time.Now().Unix()
+            if retryAfter < 1 {
+                retryAfter = 1
+            }
+            c.Header("Retry-After", strconv.FormatInt(retryAfter, 10))
             // 不引用 internal/handler.ErrorResponse 避免反向依賴，內嵌等價結構
             c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
                 "success":    false,
@@ -2103,6 +2722,39 @@ ratelimit:user:{<userID>}        # hash tag 對齊 §7.1，與 refresh token 同
 ```
 
 > **為何 IP key 不加 hash tag**：rate limiter 對單一 key 做 `INCR + EXPIRE`，不跨 key 操作，cluster 模式下單一節點自己處理即可，分散更均勻；同 user 限流則為了與其他 `{userID}` 操作（family store）共享 slot 才加 hash tag。**規則：只有需要跨 key 原子操作的場景才加 hash tag**。
+
+### 15.4 Limiter Store 建構
+
+`pkg/ratelimit` 需要 `ulule/limiter.Store` 實例承載計數狀態；本專案統一以 Redis store（多副本部署共享狀態），由獨立 constructor 提供，避免每個 middleware 各自建構。
+
+```go
+// pkg/ratelimit/store.go
+
+import (
+    sredis "github.com/ulule/limiter/v3/drivers/store/redis"
+    "github.com/redis/go-redis/v9"
+    "github.com/ulule/limiter/v3"
+)
+
+// NewRedisStore 以同一個 *redis.Client 建構 limiter store。
+// prefix 預設 "ratelimit"；對應 §15.3 / §7.1 key 命名。
+// 構造失敗（sredis 內部 ping 等）→ 回 error，由 main fatal 退出。
+func NewRedisStore(client *redis.Client, prefix string) (limiter.Store, error) {
+    if prefix == "" {
+        prefix = "ratelimit"
+    }
+    return sredis.NewStoreWithOptions(client, limiter.StoreOptions{
+        Prefix:   prefix,
+        MaxRetry: 3,
+    })
+}
+```
+
+> **與 §15.3 key 命名的關係**：`sredis` 會把 prefix 與 caller 傳入的 key 串接成 `<prefix>:<key>`。本專案 middleware 傳入的 key 已含完整命名（`ratelimit:ip:<ip>` / `ratelimit:user:{<userID>}`），prefix 設成空字串或 `ratelimit` 都不致衝突；統一用 `ratelimit` 避免 sredis 預設值在升級時悄悄改變。
+>
+> **多副本一致性**：所有副本必須用同一個 Redis instance + 同一個 prefix，否則限流計數會被分散到不同 key 而失效。
+>
+> **§22 對齊**：step 15（`pkg/ratelimit`）的第一個 sub-step 為建立 `NewRedisStore`；router 組裝（step 24，`main.go`）注入此 store 給 `IPMiddleware` / `UserMiddleware`。
 
 ---
 
@@ -2235,8 +2887,10 @@ func FromPlayer(p *model.Player) *PlayerDTO {
 // 避免每個 handler 重複 if result == nil { ... } 的樣板程式碼
 func FromPlayerList(ps []model.Player) []PlayerDTO {
     out := make([]PlayerDTO, len(ps))
-    for i, p := range ps {
-        out[i] = *FromPlayer(&p)
+    for i := range ps {
+        // 取 ps[i] 的位址而非 range 變數 p — 規避 Go 1.21 以前的 loop-var alias bug，
+        // 也讓 linter 不警告；Go 1.22+ 修了 range alias，但此 pattern 更顯式且任何版本都正確。
+        out[i] = *FromPlayer(&ps[i])
     }
     return out
 }
@@ -2259,7 +2913,10 @@ func (h *PlayerHandler) Get(c *gin.Context) {
 ### 18.1 設計原則
 
 - 至少導入 **Metrics**（Prometheus），Tracing 預留未來接入 OpenTelemetry。
-- Metrics 端點 `/metrics`：純明文 Prometheus 格式，無 auth、無限流（k8s scrape 用內部網路或 NetworkPolicy 隔離）。
+- Metrics 端點 `/metrics`：純明文 Prometheus 格式，無 auth、無限流；**端點本身會洩漏 `build_info`（版本 / commit）與所有業務 metric 名稱、label**（含 `client_id`、`role` 等），對外暴露形同 reconnaissance gift。**生產環境必須由網路層隔離**：
+  - **推薦**（k8s）：以 `NetworkPolicy` 限制只能由 `monitoring` namespace 的 Prometheus pod 抓取，YAML 範例見 §24.3
+  - **替代方案**：未來若需更嚴格，可在 `MetricsConfig` 增 `BindAddr`（獨立 listener bind 內部介面如 `127.0.0.1:9090`），與主應用 listener 物理隔離；目前 demo 階段未實作此選項
+  - **禁止用 basic auth 等應用層認證**：增加 scrape 失敗風險與 Prometheus 配置複雜度，不如網路層隔離乾淨
 - 業務指標（login 次數、refresh 換發次數）由 service 層自行記錄；HTTP 指標由 middleware 統一收。
 
 ### 18.2 內建指標
@@ -2328,6 +2985,15 @@ var (
         },
         []string{"client_id"},
     )
+
+    // AuthMiddleware 查 blacklist 時 Redis 故障的次數（fail-open，見 §7.3 / §8.5）。
+    // 短期上升 → Redis 抖動；持續上升 → blacklist 可能完全失效，應 page。
+    AuthBlacklistErrors = prometheus.NewCounter(
+        prometheus.CounterOpts{
+            Name: "auth_blacklist_errors_total",
+            Help: "Errors querying access-token blacklist in AuthMiddleware (fail-open path)",
+        },
+    )
 )
 
 // Init 註冊應用指標。平台指標（goroutine、process、go runtime）由 client_golang
@@ -2344,6 +3010,7 @@ func Init(sqlDB *sql.DB, version, commit string) {
         AuthLoginAttempts,
         AuthRotations,
         AuthReplayDetected,
+        AuthBlacklistErrors,
         BuildInfo,
         // 平台指標
         collectors.NewBuildInfoCollector(),                    // build_info{...} 標出版本
@@ -2395,7 +3062,8 @@ Audit log 用於記錄**安全相關事件**：登入成功 / 失敗、token rot
 - **檔案 rotation 責任**：本 module **不內建 lumberjack 等 rotation 套件**。若 `LOG_AUDIT_PATH` 指向檔案，rotation 必須由外部處理（**生產**：k8s sidecar 或 systemd journal；**本機開發**：直接 stdout 或外部 logrotate）。內建 rotation 會增加 module 體積與運維灰色地帶（檔案描述符、信號處理），但生產通常已有 sidecar 處理 — 此責任分工明確化。
 - **不可被應用層覆寫**：audit logger interface 不公開 `SetLevel` 等可降級方法；只能寫入與 Sync。
 - **每筆事件必填**：`event_type`、`timestamp`、`request_id`、`actor`（user_id），其餘為事件特有欄位。
-- **生命週期**：必須在 graceful shutdown 中**先於 app logger** 呼叫 `Sync()`，避免 process 結束時 buffer 內安全事件遺失（容忍度為零）。
+- **生命週期**：必須在 graceful shutdown 中**先於 app logger** 呼叫 `Sync()`，避免 process 結束時 buffer 內安全事件遺失。
+- **寫入錯誤處理**：`Log()` **不回傳 error**（caller 不該被 audit 寫失敗拖累業務邏輯）；實作必須內部 fallback — 若主 sink（檔案 / stdout）寫失敗，自動寫 `os.Stderr` 作為最後兜底，**永不吞錯**。對應「audit 不可被應用層覆寫」哲學：caller 寫 audit 後就視為「至少有一處記錄」，不需自行處理失敗。
 
 #### 18.3.2 介面定義
 
@@ -2429,6 +3097,10 @@ type AuthEvent struct {
 // Logger — audit logger 唯一介面。實作必須 thread-safe，
 // 內部從 context 自動帶出 request_id，呼叫端不需手動傳。
 //
+// Log **不回傳 error**：caller 寫 audit 後即視為「已記錄」，不該被 audit sink 寫失敗
+// 拖累業務邏輯。實作必須內部 fallback — 主 sink 寫失敗時自動寫 os.Stderr（最後兜底），
+// 永不吞錯。詳見 §18.3.1「寫入錯誤處理」。
+//
 // Sync 在 graceful shutdown 必須呼叫（且早於 app logger Sync），
 // 確保 buffer 內安全事件落地；失敗時應寫 stderr 而非依賴 app logger。
 type Logger interface {
@@ -2449,19 +3121,25 @@ type zapAuditLogger struct {
 // NewZapLogger 建立獨立 audit logger。
 //   - path == ""  → 共用 stdout（最簡單部署，本機開發預設）
 //   - path != ""  → 寫該檔案；rotation 必須由外部處理（§18.3.1）
+//                  開檔失敗（父目錄不存在 / 權限不足 / 檔案被佔用）→ 回 error；
+//                  **caller（main）必須 fatal 退出**，禁止 fallback 到 stdout 矇混（會讓 prod
+//                  以為 audit 寫入檔案但實際進 stdout，破壞 SIEM ingest 假設）。
 // 本 constructor 不接受 io.Writer，避免呼叫端誤把 app logger 的 sink 共用導致 LOG_LEVEL 污染 audit。
 func NewZapLogger(path string) (Logger, error) {
-    core, err := newAuditCore(path) // 內部固定 JSON encoder、InfoLevel、寫指定 sink
+    core, err := newAuditCore(path) // 內部固定 JSON encoder、InfoLevel、寫指定 sink；開檔失敗回 error
     if err != nil {
         return nil, fmt.Errorf("audit core: %w", err)
     }
     return &zapAuditLogger{z: zap.New(core)}, nil
 }
 
+// Log 寫入單筆 audit event。
+// 內部 fallback：若 zap core 寫主 sink 失敗，writeSyncer 會自動降級寫 os.Stderr，
+// 確保「永不吞錯」（§18.3.1 / Logger interface 註解）。
 func (l *zapAuditLogger) Log(ctx context.Context, e AuthEvent) {
     l.z.Info(string(e.Type),
         zap.String("event_type", string(e.Type)),
-        zap.String("request_id", logger.GetRequestIDFromCtx(ctx)),
+        zap.String("request_id", ctxkey.RequestID(ctx)),  // 從 pkg/ctxkey 取，不 import pkg/logger（§2.1）
         zap.String("user_id", e.UserID),
         zap.String("fid", e.FamilyID),
         zap.String("client_id", e.ClientID),
@@ -2482,6 +3160,8 @@ func (l *zapAuditLogger) Sync() error {
 
 | 觸發位置 | 寫入事件 | 必填 Extra |
 |---|---|---|
+| `AuthService.Register` CMS 自註冊成功 | `auth.register_success` | `{username, role: "user"}` |
+| `AuthService.Register` CMS 自註冊失敗 | `auth.register_failed` | `{reason: "weak_password" \| "username_taken" \| "invalid_client", username}` |
 | `AuthService.Login` 帳密驗證成功 | `auth.login_success` | — |
 | `AuthService.Login` 帳密驗證失敗 | `auth.login_failed` | `{reason: "invalid_credentials" \| "invalid_client" \| ...}` |
 | `AuthService.Refresh` rotation 成功 | `auth.token_rotated` | `{old_jti, new_jti}` |
@@ -2714,6 +3394,7 @@ JWT_REFRESH_SECRET=must-differ-from-access-secret-32+
 JWT_REFRESH_SECRET_PREVIOUS=              # 上一把 refresh secret；同上規則
 JWT_ACCESS_TTL=15m                        # access token 絕對 TTL
 JWT_GRACE_WINDOW=10s                      # rotation 後同 jti 可重送的窗口（吸收網路重試）
+JWT_CLOCK_SKEW_LEEWAY=30s                 # Verify 時 exp/nbf/iat/abs_exp 容忍的時鐘漂移（多副本部署必備）
 
 # 每個 client 的 refresh / absolute TTL（key = client_id；ABSOLUTE_TTL 必須 > REFRESH_TTL）
 #
@@ -2754,6 +3435,104 @@ METRICS_ENABLED=true
 METRICS_PATH=/metrics
 ```
 
+### 20.1 config.yaml.example
+
+YAML 與 env 採**同一份扁平命名**（對齊 §4.2 mapstructure tag）。Viper 載入優先順序：env > .env > `config.{APP_ENV}.yaml` > SetDefault。**dev 環境用 yaml 可保留註解，prod 一律走 env / secret manager**。
+
+```yaml
+# config.dev.yaml.example
+# 不放任何密碼 / token；prod 一律走 env 或 secret manager。
+
+APP_ENV: dev
+
+# Server
+PORT: 8080
+GIN_MODE: debug
+ALLOWED_ORIGINS: http://localhost:3000
+ALLOW_CREDENTIALS: true
+TRUSTED_PROXIES: ""
+SHUTDOWN_TIMEOUT: 10s
+READ_HEADER_TIMEOUT: 10s
+READ_TIMEOUT: 30s
+WRITE_TIMEOUT: 30s
+IDLE_TIMEOUT: 120s
+MAX_REQUEST_BODY: 1048576
+
+# Database
+DB_HOST: localhost
+DB_PORT: 5432
+DB_USER: postgres
+# DB_PASSWORD: 由 env 提供
+DB_NAME: playerledger
+DB_SSLMODE: disable
+DB_MAX_OPEN_CONNS: 25
+DB_MAX_IDLE_CONNS: 5
+DB_CONN_MAX_LIFETIME: 5m
+DB_CONNECT_TIMEOUT: 5s
+DB_STATEMENT_TIMEOUT: 10s
+DB_PREPARE_STMT: true
+
+# Redis
+REDIS_HOST: localhost
+REDIS_PORT: 6379
+# REDIS_PASSWORD: 由 env 提供
+REDIS_DB: 0
+REDIS_DIAL_TIMEOUT: 5s
+REDIS_READ_TIMEOUT: 3s
+REDIS_WRITE_TIMEOUT: 3s
+REDIS_POOL_SIZE: 10
+
+# JWT — 詳見 ADR 007
+JWT_ISSUER: playerledger
+# JWT_SECRET / JWT_REFRESH_SECRET / 對應 PREVIOUS：一律 env，禁止寫 yaml
+JWT_ACCESS_TTL: 15m
+JWT_GRACE_WINDOW: 10s
+JWT_CLOCK_SKEW_LEEWAY: 30s
+
+# ClientPolicies — yaml 用巢狀 map，key 直接用原 client_id 字面值（"-" 不需轉 "_"）
+JWT_CLIENT_POLICIES:
+  cms-web:
+    REFRESH_TTL: 1h
+    ABSOLUTE_TTL: 8h
+  public-web:
+    REFRESH_TTL: 1h
+    ABSOLUTE_TTL: 24h
+  ios-app:
+    REFRESH_TTL: 720h       # 30d
+    ABSOLUTE_TTL: 4320h     # 180d
+  android-app:
+    REFRESH_TTL: 720h
+    ABSOLUTE_TTL: 4320h
+
+BCRYPT_COST: 12
+
+# Logging
+LOG_LEVEL: debug
+LOG_FORMAT: console
+LOG_SERVICE: playerledger
+LOG_AUDIT_PATH: ""
+
+# Rate Limiting
+RATE_LIMIT_ENABLED: true
+RATE_LIMIT_IP_PERIOD: 1m
+RATE_LIMIT_IP_MAX: 60
+RATE_LIMIT_USER_PERIOD: 1m
+RATE_LIMIT_USER_MAX: 300
+
+# Metrics
+METRICS_ENABLED: true
+METRICS_PATH: /metrics
+```
+
+> **與 env 命名的對齊**：yaml key 等同 env 變數名（全大寫 + 底線），唯一差異是 `JWT_CLIENT_POLICIES`：yaml 用巢狀 map（client_id 保留原字面值如 `cms-web`），env 用扁平 `JWT_CLIENT_POLICIES_CMS_WEB_*`（"_" 取代 "-"），由 viper `SetEnvKeyReplacer` 對齊。
+>
+> **為何選擇全大寫扁平命名而非 yaml 慣例的小寫 nested**：
+> 1. yaml / env 命名一致，跨格式切換無心智成本
+> 2. `mapstructure:",squash"`（見 §4.2）攤平到根層，不需額外一層 key 對應
+> 3. 避免「yaml 寫 `server.port`，env 寫 `PORT`」載入時對不上
+>
+> **Secret 不進 yaml**：`JWT_SECRET` / `JWT_REFRESH_SECRET` / `DB_PASSWORD` / `REDIS_PASSWORD` 等敏感欄位**絕不**寫進 yaml（即便範本也不示範），免得有人 copy-paste 進 prod。一律走 env 或 secret manager。
+
 ---
 
 ## 21. 依賴套件清單（go.mod）
@@ -2792,29 +3571,30 @@ require (
 依 TDD 流程，每步先寫測試：
 
 1. `config` — 載入、優先順序、validate、跨欄位驗證
-2. `pkg/logger` — 初始化、`GinLogger` / `RequestID` middleware / `GetRequestID` / `GetRequestIDFromCtx`
-3. `pkg/metrics` — Prometheus registry + Gin middleware（含 status label）+ `RateLimitMisconfigured` + 平台指標（BuildInfo / DBStatsCollector）
-4. `pkg/httpx` — `MaxBodyBytes` / `SecureHeaders`（依 env 切 HSTS）/ `WriteError` / **`GinRecovery`（v1.9 從 logger 搬入）**
-5. `pkg/database` — 連線管理（zapgorm2 整合）+ **embed.FS migration**（DSN 含 `statement_timeout` + 密碼 redact）
-6. `migrations/` — 第一版 migration 腳本 + `RunMigrations()`
-7. `pkg/redis` — 連線管理、AccessTokenBlacklist、**FamilyStore（Lua CAS + grace window + replay 偵測 + lazy cleanup + `PreloadScripts` / `ScriptsLoaded`）**
-8. `pkg/auth/hasher` — `Hasher` interface + bcrypt 實作（service / repository 禁止直接呼叫 bcrypt）
-9. `pkg/jwt` — Sign / Verify（HS256；iss / aud 白名單 / exp / abs_exp）/ `context.go`（typed key）/ `PolicyOf` / `AuthMiddleware` / `RequireRole` / `RequireOwnership`
-10. `pkg/audit` — `Logger` interface（含 `Sync()`）+ zap 實作（獨立 sink、JSON 強制、event_type 列表，詳見 §18.3）
-11. `internal/apperr` — domain errors 定義（含 `ErrTokenExpired` / `ErrAbsoluteExpired` / `ErrReplayDetected` / `ErrInvalidClient` 等）
-12. `internal/handler/response` — `Response[T]`、`ErrorResponse`、`OK` / `OKList` constructor、`Meta`、`FieldError`
-13. `internal/handler/error_handler` — 錯誤對應 HTTP status（用 ErrorResponse；不洩漏細節）
-14. `internal/handler/health_handler` — `/health` 與 `/health/ready`（含 `family_store_scripts` 檢查）
-15. `pkg/ratelimit` — **`IPMiddleware` + `UserMiddleware` 兩層**，fail-open + metrics（含 `RateLimitMisconfigured`）
-16. `internal/pagination` — 分頁 helper
-17. `internal/model` — DB 實體
-18. `internal/dto` — DTO 定義 + `FromXxx` / `FromXxxList` 轉換函式
-19. `internal/repository` — 資料存取（integration test，採 transaction rollback 隔離）
-20. `internal/service/auth` — Login / Refresh / Logout / Sessions / RevokeAll 業務邏輯（含 GraceHit 重簽流程、UA 解析、audit log 串接）
-21. `internal/service/<domain>` — 業務邏輯（unit test with fake repo）
-22. `internal/handler/auth` — 6 個 auth endpoint（依 `schema/openapi.yaml`，E2E test with httptest + kin-openapi 驗證）
-23. `internal/handler/<domain>` — 其他 HTTP handler
-24. `cmd/server/main.go` — 組裝所有模組（HTTP timeouts、TrustedProxies、兩層 rate limit、Graceful Shutdown 含 audit Sync）
+2. `pkg/ctxkey` — context.Context typed key + `SetRequestID` / `RequestID` helper（最底層，無依賴；§5.4）
+3. `pkg/logger` — `Init` / `L()`（init-safe nop fallback）/ `With` / `GinLogger`（含完整 zap.Field 清單）/ `RequestID` middleware / `GetRequestID`（gin 版）
+4. `pkg/metrics` — Prometheus registry + Gin middleware（含 status label）+ `RateLimitMisconfigured` + `AuthBlacklistErrors` + 平台指標（BuildInfo / DBStatsCollector）
+5. `pkg/httpx` — `MaxBodyBytes` / `SecureHeaders`（依 env 切 HSTS）/ `WriteError` / **`GinRecovery`（v1.9 從 logger 搬入）**
+6. `pkg/database` — 連線管理（zapgorm2 整合）+ **embed.FS migration**（DSN 含 `statement_timeout` + 密碼 redact）
+7. `migrations/` — 第一版 migration 腳本（`000001_create_cms_users` / `000002_create_members` / `000003_seed_initial_admin`，見 §13.5）+ `RunMigrations()`
+8. `pkg/redis` — 連線管理、`AccessTokenBlacklist`（含 fail-open IsBlacklisted）、**FamilyStore（Lua CAS + grace window + replay 偵測 + lazy cleanup + `PreloadScripts` / `ScriptsLoaded`）**
+9. `pkg/auth/hasher` — `Hasher` interface + bcrypt 實作（service / repository 禁止直接呼叫 bcrypt）
+10. `pkg/jwt` — Sign / Verify（HS256；alg 鎖定 / iss / aud 白名單 / exp / nbf / iat 含 leeway / abs_exp，見 §8.3）/ `context.go`（typed key）/ `UserID()` helper / `PolicyOf` / `AuthMiddleware`（含 blacklist fail-open）/ `RequireRole` / `RequireOwnership`
+11. `pkg/audit` — `Logger` interface（`Log` 無 error；內部 stderr fallback；`Sync()`）+ zap 實作（獨立 sink、JSON 強制、event_type 列表，詳見 §18.3）；**不 import `pkg/logger`**，request_id 取自 `pkg/ctxkey`
+12. `internal/apperr` — domain errors 定義（含 `ErrTokenExpired` / `ErrAbsoluteExpired` / `ErrReplayDetected` / `ErrInvalidClient` / `ErrUsernameTaken` / `ErrWeakPassword` 等）
+13. `internal/handler/response` — `Response[T]`、`ErrorResponse`、`OK` / `OKList` constructor、`Meta`、`FieldError`
+14. `internal/handler/error_handler` — 錯誤對應 HTTP status（用 ErrorResponse；不洩漏細節）
+15. `internal/handler/health_handler` — `/health` 與 `/health/ready`（含 `family_store_scripts` 檢查）
+16. `pkg/ratelimit` — `NewRedisStore`（§15.4）+ **`IPMiddleware` + `UserMiddleware` 兩層**，fail-open + metrics（含 `RateLimitMisconfigured`）
+17. `internal/pagination` — 分頁 helper
+18. `internal/model` — DB 實體（先做 `CMSUser` / `Member`，見 §6.5；其他業務 model 之後加）
+19. `internal/dto` — DTO 定義 + `FromXxx` / `FromXxxList` 轉換函式
+20. `internal/repository` — 資料存取（integration test，採 transaction rollback 隔離）；先做 `CMSUserRepository`（`FindByUsername` + `Create`）與 `MemberRepository`（只 `FindByUsername`），見 §6.5
+21. `internal/service/auth` — **`AuthService` 介面（§8.9）完整 7 個 method**：Register / Login / Refresh / Logout / ListSessions / RevokeSession / RevokeAll；含弱密碼檢查、依 client_id 路由表、GraceHit 重簽流程（含 nil state / PolicyOf err 處理）、UA 解析、audit log 串接、`RevokeAll` 加當前 access JTI 入黑名單
+22. `internal/service/<domain>` — 業務邏輯（unit test with fake repo）
+23. `internal/handler/auth` — **7 個 auth endpoint**（含 `POST /auth/register`，依 `schema/openapi.yaml`，E2E test with httptest + kin-openapi 驗證；handler 骨架見 §9.5）
+24. `internal/handler/<domain>` — 其他 HTTP handler
+25. `cmd/server/main.go` — 組裝所有模組（HTTP timeouts、TrustedProxies、兩層 rate limit、Graceful Shutdown 含 audit Sync）
 
 ---
 
@@ -2868,6 +3648,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          # cache: true 預設以 go.sum hash 作為 cache key（actions/setup-go v3+），
+          # 需 repo 已 commit go.sum（CI 不會自動產生）。go.sum 缺 → cache miss 每次重抓 deps。
           cache: true
       - uses: golangci/golangci-lint-action@v6
         with:
@@ -3092,6 +3874,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o /out/server ./cmd/server
 
 # ----- runtime -----
+# Production 強烈建議改用 sha256 digest 鎖死（防 supply-chain image swap），由 dependabot 自動升版：
+#   FROM gcr.io/distroless/static-debian12:nonroot@sha256:<pin-via-dependabot>
+# Dev/CI 用 tag 即可；prod 部署前 CI 可加 check：若 image 仍含 `:nonroot` 不含 digest 則 fail。
 FROM gcr.io/distroless/static-debian12:nonroot
 
 # distroless 已有 /etc/passwd 的 nonroot user，UID 65532
@@ -3137,6 +3922,42 @@ securityContext:
   capabilities:
     drop: [ALL]
 ```
+
+**`/metrics` 網路層隔離**（對齊 §18.1）— 限制只能由 `monitoring` namespace 的 Prometheus pod 抓取，避免端點對外暴露洩漏 build_info 與業務 label：
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: playerledger-allow-metrics-from-monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app: playerledger
+  policyTypes: [Ingress]
+  ingress:
+    # 業務流量（從 ingress controller / api gateway 進來）
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+    # /metrics 限定 monitoring namespace 的 Prometheus
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080
+```
+
+> 上述兩條 `from` 都允許 port 8080，是因為本專案 `/metrics` 與業務 endpoint 共用同一 listener（§18.1 替代方案尚未啟用）；以 NetworkPolicy 限制「誰能連」即可。若日後啟用獨立 listener，把第二條 `port` 改為 `9090` 即可。
 
 ### 24.4 建置與發布
 
