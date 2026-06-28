@@ -115,10 +115,12 @@ func TestLoad_DefaultValues(t *testing.T) {
 	t.Setenv("GIN_MODE", "debug")
 	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
 	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_PORT", "5432") // integration 環境 testcontainers 會把 DB_PORT 設為非預設值
 	t.Setenv("DB_USER", "postgres")
 	t.Setenv("DB_PASSWORD", "password")
 	t.Setenv("DB_NAME", "playerledger")
 	t.Setenv("REDIS_HOST", "localhost")
+	t.Setenv("REDIS_PORT", "6379") // 同上，避免 testcontainers 的 port 溢出
 	t.Setenv("JWT_SECRET", "super-secret-key-32-bytes-long!!")
 	t.Setenv("JWT_REFRESH_SECRET", "refresh-secret-key-32-bytes-long!!")
 

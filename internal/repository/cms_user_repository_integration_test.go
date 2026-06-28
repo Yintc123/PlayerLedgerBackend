@@ -194,21 +194,23 @@ func TestCMSUserRepository_Create_DB錯誤_回傳包裝錯誤(t *testing.T) {
 	repo := NewCMSUserRepository(db)
 	ctx := context.Background()
 
-	// 準備：建立一個用於測試的用戶
+	// 準備：無效 role 值觸發 CHECK constraint violation（SQLSTATE 23514），
+	// 不是 23505 unique violation → 不被對應到 ErrConflict，走包裝錯誤路徑。
+	// 注意：空字串 PasswordHash 不觸發 NOT NULL（PostgreSQL 只攔截 NULL）。
 	user := &model.CMSUser{
 		Base: model.Base{
 			ID: uuid.New(),
 		},
-		Username: "validuser",
-		// PasswordHash 故意不填，導致 NOT NULL constraint violation
-		Role: "user",
+		Username:     "validuser",
+		PasswordHash: "somehash",
+		Role:         "invalid_role", // violates CHECK (role IN ('admin','user','viewer'))
 	}
 
 	// 執行
 	err := repo.Create(ctx, user)
 
 	// 驗證：應該得到一個包裝過的錯誤，不是 ErrConflict
-	assert.Error(t, err)
+	require.Error(t, err) // require.Error：失敗時立刻停止，避免後續 err.Error() panic
 	assert.NotEqual(t, apperr.ErrConflict, err)
 	assert.Contains(t, err.Error(), "create cms user:")
 }
