@@ -134,6 +134,27 @@ func AuthMiddleware(jwtManager Manager, blacklist AccessTokenBlacklist, userRevo
 	}
 }
 
+// RequireUserType 驗證 token 的 UserType 是否在允許清單內，需接在 AuthMiddleware 之後。
+// 分離 CMS（UserTypeCMS）與玩家（UserTypeMember）路由，防止跨身份呼叫。
+func RequireUserType(userTypes ...UserType) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := GetClaims(c)
+		if !ok {
+			httpx.WriteError(c, http.StatusUnauthorized, "unauthorized")
+			c.Abort()
+			return
+		}
+		for _, ut := range userTypes {
+			if claims.UserType == ut {
+				c.Next()
+				return
+			}
+		}
+		httpx.WriteError(c, http.StatusForbidden, "forbidden")
+		c.Abort()
+	}
+}
+
 // RequireRole 驗證 token role 是否符合，需接在 AuthMiddleware 之後。
 //
 // 注意：

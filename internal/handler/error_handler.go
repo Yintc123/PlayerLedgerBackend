@@ -87,6 +87,12 @@ func HandleError(c *gin.Context, err error) {
 	case errors.Is(err, apperr.ErrTooManyRequests):
 		httpx.WriteError(c, http.StatusTooManyRequests, "too many requests")
 
+	// deposit-records-api sentinels
+	case errors.Is(err, apperr.ErrInvalidTransition):
+		httpx.WriteError(c, http.StatusUnprocessableEntity, "invalid_transition")
+	case errors.Is(err, apperr.ErrReferenceNoConflict):
+		httpx.WriteError(c, http.StatusConflict, "resource already exists")
+
 	// cms-users-api §8 sentinels
 	case errors.Is(err, apperr.ErrLastAdminLockout):
 		httpx.WriteError(c, http.StatusUnprocessableEntity, "last_admin_lockout")

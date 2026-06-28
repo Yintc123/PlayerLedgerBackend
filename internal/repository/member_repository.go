@@ -5,16 +5,18 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/yintengching/playerledger/internal/apperr"
 	"github.com/yintengching/playerledger/internal/model"
 	"gorm.io/gorm"
 )
 
 // MemberRepository 定義玩家倉儲介面。
-// FindByUsername：找不到回 apperr.ErrNotFound；DB 錯誤一律 fmt.Errorf("find member: %w", err)。
+// FindByUsername/FindByID：找不到回 apperr.ErrNotFound；DB 錯誤一律 fmt.Errorf("find member: %w", err)。
 // Member 註冊現階段不開放，僅提供查詢，故不提供 Create 方法。
 type MemberRepository interface {
 	FindByUsername(ctx context.Context, username string) (*model.Member, error)
+	FindByID(ctx context.Context, id uuid.UUID) (*model.Member, error)
 }
 
 type memberRepository struct {
@@ -38,6 +40,18 @@ func (r *memberRepository) FindByUsername(ctx context.Context, username string) 
 	return &member, nil
 }
 
+// FindByID 按 UUID 查找。
+func (r *memberRepository) FindByID(ctx context.Context, id uuid.UUID) (*model.Member, error) {
+	var member model.Member
+	if err := dbFromCtx(ctx, r.db).WithContext(ctx).Where("id = ? AND deleted_at IS NULL", id).First(&member).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, apperr.ErrNotFound
+		}
+		return nil, fmt.Errorf("find member by id: %w", err)
+	}
+	return &member, nil
+}
+
 // FakeMemberRepository 用於測試的 fake 實現。
 type FakeMemberRepository struct {
 	members map[string]*model.Member
@@ -54,6 +68,16 @@ func NewFakeMemberRepository() MemberRepository {
 func (r *FakeMemberRepository) FindByUsername(ctx context.Context, username string) (*model.Member, error) {
 	if m, ok := r.members[username]; ok {
 		return m, nil
+	}
+	return nil, apperr.ErrNotFound
+}
+
+// FindByID fake 實現（按 ID 查找）。
+func (r *FakeMemberRepository) FindByID(ctx context.Context, id uuid.UUID) (*model.Member, error) {
+	for _, m := range r.members {
+		if m.ID == id {
+			return m, nil
+		}
 	}
 	return nil, apperr.ErrNotFound
 }

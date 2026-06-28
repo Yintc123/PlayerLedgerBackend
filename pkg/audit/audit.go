@@ -34,6 +34,11 @@ const (
 	EventCMSUserDeleted              EventType = "cms_user.deleted"
 	EventCMSUserSelfUpdated          EventType = "cms_user.self_updated"
 	EventCMSUserSessionsForceRevoked EventType = "cms_user.sessions_force_revoked" // role 變更 / 軟刪除附帶
+
+	// deposit-records-api §8：儲值紀錄金融操作事件。
+	EventDepositCreated       EventType = "deposit.created"
+	EventDepositStatusChanged EventType = "deposit.status_changed"
+	EventDepositNoteUpdated   EventType = "deposit.note_updated"
 )
 
 // AuthEvent 安全事件的結構化內容（§18.3.2）。

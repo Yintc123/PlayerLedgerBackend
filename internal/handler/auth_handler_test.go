@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/yintengching/playerledger/config"
@@ -67,6 +68,15 @@ func NewFakeMemberRepository() *FakeMemberRepository {
 func (r *FakeMemberRepository) FindByUsername(ctx context.Context, username string) (*model.Member, error) {
 	for _, m := range r.members {
 		if m.Username == username {
+			return m, nil
+		}
+	}
+	return nil, apperr.ErrNotFound
+}
+
+func (r *FakeMemberRepository) FindByID(_ context.Context, id uuid.UUID) (*model.Member, error) {
+	for _, m := range r.members {
+		if m.ID == id {
 			return m, nil
 		}
 	}

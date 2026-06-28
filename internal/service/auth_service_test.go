@@ -84,6 +84,15 @@ func (r *fakeMemberRepository) FindByUsername(ctx context.Context, username stri
 	return member, nil
 }
 
+func (r *fakeMemberRepository) FindByID(_ context.Context, id uuid.UUID) (*model.Member, error) {
+	for _, m := range r.members {
+		if m.ID == id {
+			return m, nil
+		}
+	}
+	return nil, apperr.ErrNotFound
+}
+
 type fakeHasher struct{}
 
 func (h *fakeHasher) Hash(plain string) (string, error) {

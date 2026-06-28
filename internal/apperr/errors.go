@@ -28,6 +28,10 @@ var (
 	ErrCannotDeleteSelf        = errors.New("cannot delete self")
 	ErrCannotChangeOwnRole     = errors.New("cannot change own role")
 	ErrCurrentPasswordMismatch = errors.New("current password mismatch")
+
+	// deposit-records domain（deposit-records-model.md §7.5）
+	ErrInvalidTransition   = errors.New("invalid transition")    // 非法 status 轉換 → 422
+	ErrReferenceNoConflict = errors.New("reference_no conflict") // reference_no 重複 → 409
 )
 
 // AppError 應用層錯誤，包含錯誤碼和細節

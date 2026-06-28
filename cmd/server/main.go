@@ -142,6 +142,7 @@ func main() {
 	// ═══════════════════════════════════════════════════════
 	cmsUserRepo := repository.NewCMSUserRepository(db)
 	memberRepo := repository.NewMemberRepository(db)
+	depositRepo := repository.NewDepositRecordRepository(db)
 	bcryptHasher := hasher.NewBcryptHasher(cfg.JWT.BcryptCost)
 	blacklist := redis.NewAccessTokenBlacklist(redisClient)
 	userRevoke := redis.NewUserRevocationStore(redisClient)
@@ -168,6 +169,9 @@ func main() {
 		cfg.JWT.GraceWindow, // Refresh rotation 重送容忍窗（§8.2.1）
 	)
 	log.Info("auth service initialized")
+
+	depositService := service.NewDepositService(depositRepo, memberRepo, auditLogger)
+	log.Info("deposit service initialized")
 
 	// ═══════════════════════════════════════════════════════
 	// 11. 建立 Gin Router & 中介層（§9.2）
@@ -235,6 +239,26 @@ func main() {
 			authGroupAuth.DELETE("/sessions/:fid", authHandler.RevokeSession)
 			authGroupAuth.POST("/sessions/revoke-all", authHandler.RevokeAllSessions)
 		}
+	}
+
+	// Member deposit endpoints（/api/v1/me/deposit-records）
+	depositHandler := handler.NewDepositHandler(depositService)
+	memberDepositGroup := apiGroup.Group("/me").
+		Use(jwt.AuthMiddleware(jwtManager, blacklist, userRevoke)).
+		Use(jwt.RequireUserType(jwt.UserTypeMember))
+	{
+		memberDepositGroup.GET("/deposit-records", depositHandler.ListMine)
+	}
+
+	// CMS endpoints（/api/cms/*）— AuthMiddleware + RequireUserType(cms)
+	cmsGroup := router.Group("/api/cms").
+		Use(jwt.AuthMiddleware(jwtManager, blacklist, userRevoke)).
+		Use(jwt.RequireUserType(jwt.UserTypeCMS))
+	{
+		cmsGroup.POST("/deposit-records", depositHandler.Create)
+		cmsGroup.GET("/deposit-records", depositHandler.List)
+		cmsGroup.GET("/deposit-records/:id", depositHandler.Get)
+		cmsGroup.PATCH("/deposit-records/:id", depositHandler.UpdateStatus)
 	}
 
 	// ═══════════════════════════════════════════════════════
