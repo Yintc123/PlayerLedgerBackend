@@ -26,6 +26,73 @@ paths:
   # =============================================================
   # Authentication
   # =============================================================
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: CMS 自註冊（建立 CMS user，預設 role=user）
+      description: |
+        僅 `client_id == "cms-web"` 接受，其餘回 400 `invalid_client`。
+        註冊成功**不簽 token**，前端必須再打一次 `/auth/login` 取得 access + refresh token。
+        詳見 infrastructure.md §8.9。
+
+        弱密碼規則：min 8 字元，至少含一個字母與一個數字。違反 → 422 `weak_password`。
+      operationId: register
+      security: []  # 公開 endpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: 建立成功（無 body；caller 須另打 /auth/login）
+        '400':
+          description: 請求格式錯，或 client_id 不在允許清單
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_input:
+                  summary: validation 失敗
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: invalid input
+                invalid_client:
+                  summary: client_id != "cms-web"
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: invalid_client
+        '409':
+          description: username 已被同表佔用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                username_taken:
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: username_taken
+        '422':
+          description: 弱密碼
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                weak_password:
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: weak_password
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
   /auth/login:
     post:
       tags: [auth]
@@ -144,7 +211,24 @@ paths:
         '204':
           description: 登出成功
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: refresh_token 簽章 / iss / aud / exp 失敗，或 fid 與 access token 不一致
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                fid_mismatch:
+                  summary: refresh_token.fid != access_token.fid（同 user 不同 family；應改用 /auth/sessions/{fid}）
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: invalid input
+                invalid_refresh:
+                  summary: 提供的 refresh_token 簽章 / 結構錯
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: invalid input
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -233,6 +317,28 @@ components:
         - public-web
         - ios-app
         - android-app
+
+    RegisterRequest:
+      type: object
+      required: [username, password, client_id]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+          description: CMS user 帳號；同表內 unique（軟刪除排除）
+        password:
+          type: string
+          minLength: 8
+          maxLength: 256
+          format: password
+          description: |
+            弱密碼規則：min 8 字元，至少含一個字母與一個數字。
+            違反 → 422 `weak_password`。
+        client_id:
+          allOf:
+            - $ref: '#/components/schemas/ClientID'
+          description: 必須為 `cms-web`，其餘 → 400 `invalid_client`
 
     LoginRequest:
       type: object
@@ -398,9 +504,12 @@ components:
             | `invalid_token` | 簽章 / iss / aud 失敗；走 login |
             | `replay_detected` | 重放偵測；UI 提示「異常登入」走 login |
             | `session_not_found` | family 已廢 / 已過期 |
+            | `session_revoked` | AuthMiddleware 命中黑名單（強制踢人） |
             | `use_logout_instead` | 嘗試撤銷自己當前 family |
             | `resource not found` | 一般 404 |
             | `resource already exists` | 409 conflict |
+            | `username_taken` | Register 時 username 已被同表佔用（409） |
+            | `weak_password` | Register 時密碼不符弱密碼規則（422） |
             | `too many requests` | 限流 |
             | `internal server error` | 500 |
         details:
