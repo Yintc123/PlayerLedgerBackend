@@ -52,6 +52,12 @@ func (t *gormTransactor) WithTx(ctx context.Context, fn func(ctx context.Context
 	})
 }
 
+// hasTx 回報 ctx 是否掛有進行中的 transaction（供 repo 決定是否加 FOR UPDATE 行鎖，§10.2）。
+func hasTx(ctx context.Context) bool {
+	tx, ok := ctx.Value(txCtxKey{}).(*gorm.DB)
+	return ok && tx != nil
+}
+
 // dbFromCtx 取 ctx 內的 tx-scoped *gorm.DB；若 ctx 沒掛 tx 就回 fallback（通常為 r.db）。
 // 所有 repo method 應透過此 helper 取連線，才能無痛切換 tx / 非 tx 場景。
 func dbFromCtx(ctx context.Context, fallback *gorm.DB) *gorm.DB {

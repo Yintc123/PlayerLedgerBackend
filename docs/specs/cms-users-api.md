@@ -1,6 +1,6 @@
 # CMS Users API 規格書
 
-版本：v1.4（基建層完成，domain 待實作）
+版本：v1.5（domain 落地完成 — repository / service / handler / DTO / 路由 / OpenAPI + 三層測試）
 範圍：CMS 內部人員（`cms_users` 表）的管理 API
 對應規格：`infrastructure.md` §3（OpenAPI）、§7.5（UserRevocationStore）、§8（Auth）、§10（Response）、§12（Errors）、§17（DTO）、§18.2（Metrics）
 對應 ADR：暫無
@@ -793,15 +793,15 @@ WHERE deleted_at IS NULL;
 - [x] `internal/apperr/errors.go` 加 4 個新 sentinel（§8）
 - [x] `internal/handler/error_handler.go` 加 4 個 case 映射（§8）
 - [x] `pkg/audit/audit.go` 加 5 個 EventType 常數（§7）+ `AuthEvent.TargetUserID` 欄位
-- [ ] `internal/repository/cms_user_repository.go` 擴充 5 個 method：FindByID / List / Update / SoftDelete / CountActiveAdmins（§10）
-- [ ] `internal/dto/cms_user_dto.go` 新檔（§5.1）
-- [ ] `internal/service/cms_user_service.go` 新檔：constructor 含 6 個 dependency（§9）；5 個 method 含 INV / transaction / revoke / audit（§4、§6、§10.2）
-- [ ] `internal/handler/cms_user_handler.go` 新檔：5 個 handler + role/sort 白名單驗證 + `username_like` SQL escape（§4.1）
-- [ ] `schema/openapi.yaml` 貼入 §5.2 完整 schema（5 endpoint + DTO）
-- [ ] `cmd/server/main.go`：
+- [x] `internal/repository/cms_user_repository.go` 擴充 5 個 method：FindByID / List / Update / SoftDelete / CountActiveAdmins（§10）
+- [x] `internal/dto/cms_user_dto.go` 新檔（§5.1）
+- [x] `internal/service/cms_user_service.go` 新檔：constructor 含 dependency（§9，含 `Transactor`）；5 個 method 含 INV / transaction / revoke / audit（§4、§6、§10.2）
+- [x] `internal/handler/cms_user_handler.go` 新檔：5 個 handler + role/sort 白名單驗證 + `username_like` SQL escape（§4.1）
+- [x] `schema/openapi.yaml` 貼入 §5.2 完整 schema（5 endpoint + DTO + Conflict / UnprocessableEntity responses）
+- [x] `cmd/server/main.go`：
   - 計算 `userRevocationTTL = max(ClientPolicies.AbsoluteTTL) + 24h` 並注入（§9）
   - wire CMSUserService 與 handler
-  - **路由註冊順序**：`/me` 必須先於 `/:id`（Gin tree 採 longest static prefix 優先，順序錯會 panic）
+  - **路由註冊順序**：`/me` 必須先於 `/:id`
 
   ```go
   g := r.Group("/api/cms/users",
@@ -816,16 +816,16 @@ WHERE deleted_at IS NULL;
   ```
 
 **測試**：
-- [ ] Unit tests：service 層 INV 規則、role 強制、revoke 觸發、audit fail 不阻塞主操作（§12 共 10 條）
-- [ ] Integration tests：repository List 篩選（含 username_like escape）、軟刪除、unique 衝突、transaction race（兩 admin 並發 demote）
-- [ ] E2E tests：5 endpoint × 權限矩陣 × OpenAPI schema 驗證（用 kin-openapi）
+- [x] Unit tests：service 層 INV 規則、role 強制、revoke 觸發、audit、self-update 密碼驗證（`cms_user_service_test.go`，18 條）
+- [x] Integration tests：repository List 篩選（含 username_like `_` escape）、軟刪除 idempotency、unique 衝突、CountActiveAdmins、transaction race（兩 admin 並發 demote 只成功一個）（`cms_user_repository_integration_test.go`）
+- [x] E2E tests：5 endpoint × 權限矩陣 × 邊界條件（`cms_user_handler_test.go`，含 NoPasswordHashInResponse / INV-4 role 擋下）
 
 **Migration（可選，建議加）**：
 - [ ] role + deleted_at 複合 index（§11）
 - [ ] username pg_trgm GIN index（§11）
 
 **規格同步**：
-- [ ] 更新 `infrastructure.md` §3.4 endpoint 清單，加入這 5 個
+- [x] 更新 `infrastructure.md` §3.4 加 Domain 端點交叉引用（CMS Users 5 個 + 儲值紀錄 5 個）
 
 ---
 
@@ -833,6 +833,7 @@ WHERE deleted_at IS NULL;
 
 | 版本 | 日期 | 變更 |
 |---|---|---|
+| v1.5 | 2026-06-29 | Domain 全層落地（TDD/SDD）：repository 擴充 5 method（含 `_` LIKE escape、admin-set `ORDER BY id FOR UPDATE` 序列化 INV-1 並避免 deadlock）；新增 DTO / service（5 method + `Transactor` 依賴）/ handler（5 endpoint，`DisallowUnknownFields` 落實 additionalProperties:false 與 INV-4）；OpenAPI 補 5 endpoint + `CMSUserDTO` / `Conflict` / `UnprocessableEntity`；main.go 注入 `userRevocationTTL` 並註冊路由（/me 先於 /:id）。測試：18 unit + handler E2E + repository integration（含並發 demote race），全綠。 |
 | v1.4 | 2026-06-28 | 基建層落地完成（Infra todo 全打勾）。§7 決議「擴充既有 `AuthEvent` 加 `TargetUserID` 欄位」（之前 v1.3 留有「擴充 vs 新增 AdminEvent」二擇一）；補序列化規則「`TargetUserID==""` 時 JSON 不輸出該欄位」保留 `auth.*` 既有格式。§14 Infra 與 Domain 部分項目改為 `[x]`。 |
 | v1.3 | 2026-06-28 | 最佳實踐補強，目標：規格能 1:1 落地、實作不再回頭問。重點：§5.2 補完整 5 endpoint OpenAPI + 新增 §5.3 curl/JSON 範例；§4.1 加 List 解析規則（role 多值、username_like SQL escape、include_deleted 權限、sort 白名單）；§4.2 補 query 參數表；§4.3/§4.4 加 transaction 流程圖 + post-commit best-effort 順序 + UserRevocationStore TTL 計算公式；§4.4 補 DELETE idempotency 行為與 RFC7231 引用；§6 INV-4 補「OpenAPI additionalProperties:false + service 深度防禦」；§7 加 audit fail policy（含 `AuditWriteErrors` metric）；§9 補 6 個 constructor dependency + TTL 計算範例；§10 新增 §10.1 Transactor pattern + §10.2 service 使用範例（SELECT FOR UPDATE 子句）；§14 重組為 Infra/Domain/測試/Migration/規格同步 五區，加路由註冊順序 Go 範例 |
 | v1.2 | 2026-06-28 | 把 user-level revoke 機制正式落地到 `infrastructure.md` v1.11（§7.5 `UserRevocationStore` + §8.5 step 3.5 + §12.4 + §18.2 metric）；本檔 §4.3/§4.4/§14 改為直接引用 §7.5 而非散描述 |

@@ -11,6 +11,7 @@ import (
 	"github.com/yintengching/playerledger/config"
 	"github.com/yintengching/playerledger/internal/apperr"
 	"github.com/yintengching/playerledger/internal/model"
+	"github.com/yintengching/playerledger/internal/repository"
 	"github.com/yintengching/playerledger/pkg/audit"
 	"github.com/yintengching/playerledger/pkg/auth/hasher"
 	"github.com/yintengching/playerledger/pkg/jwt"
@@ -66,6 +67,27 @@ func (r *fakeCMSUserRepository) Create(ctx context.Context, u *model.CMSUser) er
 	u.ID = uuid.New()
 	r.users[u.Username] = u
 	return nil
+}
+
+// 以下為 cms-users-api §10 新增介面方法；auth 測試不使用，提供 stub 滿足介面。
+func (r *fakeCMSUserRepository) FindByID(context.Context, string, bool) (*model.CMSUser, error) {
+	return nil, apperr.ErrNotFound
+}
+
+func (r *fakeCMSUserRepository) List(context.Context, repository.ListCMSUsersOptions) ([]model.CMSUser, int64, error) {
+	return nil, 0, nil
+}
+
+func (r *fakeCMSUserRepository) Update(context.Context, string, repository.CMSUserPatch) error {
+	return apperr.ErrNotFound
+}
+
+func (r *fakeCMSUserRepository) SoftDelete(context.Context, string) error {
+	return apperr.ErrNotFound
+}
+
+func (r *fakeCMSUserRepository) CountActiveAdmins(context.Context) (int64, error) {
+	return 0, nil
 }
 
 type fakeMemberRepository struct {

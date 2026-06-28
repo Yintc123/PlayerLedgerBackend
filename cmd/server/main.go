@@ -173,6 +173,22 @@ func main() {
 	depositService := service.NewDepositService(depositRepo, memberRepo, auditLogger)
 	log.Info("deposit service initialized")
 
+	// CMS user 管理服務（cms-users-api §9）。
+	// userRevocationTTL = max(ClientPolicies.AbsoluteTTL) + 24h 安全餘量（§4.3）。
+	var maxAbsTTL time.Duration
+	for _, p := range cfg.JWT.ClientPolicies {
+		if p.AbsoluteTTL > maxAbsTTL {
+			maxAbsTTL = p.AbsoluteTTL
+		}
+	}
+	userRevocationTTL := maxAbsTTL + 24*time.Hour
+	transactor := repository.NewTransactor(db)
+	cmsUserService := service.NewCMSUserService(
+		cmsUserRepo, transactor, bcryptHasher,
+		familyStore, userRevoke, userRevocationTTL, auditLogger,
+	)
+	log.Info("cms user service initialized", zap.Duration("user_revocation_ttl", userRevocationTTL))
+
 	// ═══════════════════════════════════════════════════════
 	// 11. 建立 Gin Router & 中介層（§9.2）
 	// 順序：RequestID → GinRecovery → GinLogger → SecureHeaders → CORS → MaxBodyBytes → Metrics
@@ -257,11 +273,20 @@ func main() {
 	cmsGroup := router.Group("/api/cms").
 		Use(jwt.AuthMiddleware(jwtManager, blacklist, userRevoke)).
 		Use(jwt.RequireUserType(jwt.UserTypeCMS))
+	cmsUserHandler := handler.NewCMSUserHandler(cmsUserService)
 	{
 		cmsGroup.POST("/deposit-records", jwt.RequireRole(jwt.RoleAdmin, jwt.RoleUser), depositHandler.Create)
 		cmsGroup.GET("/deposit-records", depositHandler.List)
 		cmsGroup.GET("/deposit-records/:id", depositHandler.Get)
 		cmsGroup.PATCH("/deposit-records/:id", jwt.RequireRole(jwt.RoleAdmin), depositHandler.UpdateStatus)
+
+		// CMS Users（cms-users-api §3）。/me 必須先於 /:id 註冊（§14）。
+		//   GET     讀 → 全 CMS staff；PATCH/DELETE :id → admin only；PATCH /me → 自己
+		cmsGroup.PATCH("/users/me", cmsUserHandler.UpdateSelf)
+		cmsGroup.GET("/users", cmsUserHandler.List)
+		cmsGroup.GET("/users/:id", cmsUserHandler.Get)
+		cmsGroup.PATCH("/users/:id", jwt.RequireRole(jwt.RoleAdmin), cmsUserHandler.Update)
+		cmsGroup.DELETE("/users/:id", jwt.RequireRole(jwt.RoleAdmin), cmsUserHandler.Delete)
 	}
 
 	// ═══════════════════════════════════════════════════════

@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -232,4 +233,194 @@ func TestCMSUserRepository_FindByUsername_DB錯誤_回傳包裝錯誤(t *testing
 	// 驗證
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "find cms user:")
+}
+
+// ─── cms-users-api §10 新增方法 integration 測試 ───────────────────────────────
+
+// TestCMSUserRepository_List_FilterByRole role 篩選只回對應 role
+func TestCMSUserRepository_List_FilterByRole(t *testing.T) {
+	db := WithTx(t)
+	repo := NewCMSUserRepository(db)
+	ctx := context.Background()
+
+	for _, u := range []*model.CMSUser{
+		{Base: model.Base{ID: uuid.New()}, Username: "i_admin", Role: "admin", PasswordHash: "h"},
+		{Base: model.Base{ID: uuid.New()}, Username: "i_user", Role: "user", PasswordHash: "h"},
+		{Base: model.Base{ID: uuid.New()}, Username: "i_viewer", Role: "viewer", PasswordHash: "h"},
+	} {
+		require.NoError(t, db.Create(u).Error)
+	}
+
+	users, total, err := repo.List(ctx, ListCMSUsersOptions{Page: 1, PageSize: 20, RoleFilter: []string{"admin", "user"}})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), total)
+	require.Len(t, users, 2)
+}
+
+// TestCMSUserRepository_List_UsernameLike_EscapesUnderscore `_` 必須被 escape，
+// 不可當 SQL LIKE 萬用字元，否則 "a_b" 會誤配 "axb"
+func TestCMSUserRepository_List_UsernameLike_EscapesUnderscore(t *testing.T) {
+	db := WithTx(t)
+	repo := NewCMSUserRepository(db)
+	ctx := context.Background()
+
+	for _, u := range []*model.CMSUser{
+		{Base: model.Base{ID: uuid.New()}, Username: "a_b", Role: "user", PasswordHash: "h"},
+		{Base: model.Base{ID: uuid.New()}, Username: "axb", Role: "user", PasswordHash: "h"},
+	} {
+		require.NoError(t, db.Create(u).Error)
+	}
+
+	users, total, err := repo.List(ctx, ListCMSUsersOptions{Page: 1, PageSize: 20, UsernameLike: "a_b"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, users, 1)
+	assert.Equal(t, "a_b", users[0].Username)
+}
+
+// TestCMSUserRepository_List_ExcludesSoftDeleted 預設不含軟刪除；include_deleted=true 才含
+func TestCMSUserRepository_List_ExcludesSoftDeleted(t *testing.T) {
+	db := WithTx(t)
+	repo := NewCMSUserRepository(db)
+	ctx := context.Background()
+
+	active := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "i_active", Role: "user", PasswordHash: "h"}
+	deleted := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "i_deleted", Role: "user", PasswordHash: "h"}
+	require.NoError(t, db.Create(active).Error)
+	require.NoError(t, db.Create(deleted).Error)
+	require.NoError(t, db.Delete(deleted).Error)
+
+	_, total, err := repo.List(ctx, ListCMSUsersOptions{Page: 1, PageSize: 20})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+
+	_, totalAll, err := repo.List(ctx, ListCMSUsersOptions{Page: 1, PageSize: 20, IncludeDeleted: true})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), totalAll)
+}
+
+// TestCMSUserRepository_FindByID_SoftDeleted_NotFoundWithoutInclude
+func TestCMSUserRepository_FindByID_SoftDeleted_NotFoundWithoutInclude(t *testing.T) {
+	db := WithTx(t)
+	repo := NewCMSUserRepository(db)
+	ctx := context.Background()
+
+	u := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "i_sd", Role: "user", PasswordHash: "h"}
+	require.NoError(t, db.Create(u).Error)
+	require.NoError(t, db.Delete(u).Error)
+
+	_, err := repo.FindByID(ctx, u.ID.String(), false)
+	assert.ErrorIs(t, err, apperr.ErrNotFound)
+
+	found, err := repo.FindByID(ctx, u.ID.String(), true)
+	require.NoError(t, err)
+	assert.Equal(t, "i_sd", found.Username)
+}
+
+// TestCMSUserRepository_SoftDelete_Idempotency 第二次刪除 → ErrNotFound
+func TestCMSUserRepository_SoftDelete_Idempotency(t *testing.T) {
+	db := WithTx(t)
+	repo := NewCMSUserRepository(db)
+	ctx := context.Background()
+
+	u := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "i_del", Role: "user", PasswordHash: "h"}
+	require.NoError(t, db.Create(u).Error)
+
+	require.NoError(t, repo.SoftDelete(ctx, u.ID.String()))
+	err := repo.SoftDelete(ctx, u.ID.String())
+	assert.ErrorIs(t, err, apperr.ErrNotFound)
+}
+
+// TestCMSUserRepository_Update_UsernameConflict_ReturnsErrConflict
+func TestCMSUserRepository_Update_UsernameConflict_ReturnsErrConflict(t *testing.T) {
+	db := WithTx(t)
+	repo := NewCMSUserRepository(db)
+	ctx := context.Background()
+
+	taken := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "i_taken", Role: "user", PasswordHash: "h"}
+	target := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "i_target", Role: "user", PasswordHash: "h"}
+	require.NoError(t, db.Create(taken).Error)
+	require.NoError(t, db.Create(target).Error)
+
+	newName := "i_taken"
+	err := repo.Update(ctx, target.ID.String(), CMSUserPatch{Username: &newName})
+	assert.ErrorIs(t, err, apperr.ErrConflict)
+}
+
+// TestCMSUserRepository_CountActiveAdmins 只算未軟刪除的 admin
+func TestCMSUserRepository_CountActiveAdmins(t *testing.T) {
+	db := WithTx(t)
+	repo := NewCMSUserRepository(db)
+	ctx := context.Background()
+
+	a1 := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "i_a1", Role: "admin", PasswordHash: "h"}
+	a2 := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "i_a2", Role: "admin", PasswordHash: "h"}
+	u1 := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "i_u1", Role: "user", PasswordHash: "h"}
+	require.NoError(t, db.Create(a1).Error)
+	require.NoError(t, db.Create(a2).Error)
+	require.NoError(t, db.Create(u1).Error)
+	require.NoError(t, db.Delete(a2).Error) // 軟刪一個 admin
+
+	count, err := repo.CountActiveAdmins(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count)
+}
+
+// TestCMSUserRepository_ConcurrentDemote_OnlyOneSucceeds 兩個並發降級僅有的兩個 admin，
+// 透過 Transactor + CountActiveAdmins 的 admin-set FOR UPDATE 序列化，最多剩一個 admin（§12 #10）。
+// 使用真實 commit（非 WithTx rollback），測試後手動硬刪除清理。
+func TestCMSUserRepository_ConcurrentDemote_OnlyOneSucceeds(t *testing.T) {
+	repo := NewCMSUserRepository(testDB)
+	tx := NewTransactor(testDB)
+	ctx := context.Background()
+
+	a1 := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "race_a1_" + uuid.NewString(), Role: "admin", PasswordHash: "h"}
+	a2 := &model.CMSUser{Base: model.Base{ID: uuid.New()}, Username: "race_a2_" + uuid.NewString(), Role: "admin", PasswordHash: "h"}
+	require.NoError(t, testDB.Create(a1).Error)
+	require.NoError(t, testDB.Create(a2).Error)
+	t.Cleanup(func() {
+		testDB.Unscoped().Delete(&model.CMSUser{}, "id IN ?", []uuid.UUID{a1.ID, a2.ID})
+	})
+
+	// demote 函式：模擬 service.Update 的 INV-1 transaction 邏輯
+	demote := func(targetID string) error {
+		return tx.WithTx(ctx, func(ctx context.Context) error {
+			target, err := repo.FindByID(ctx, targetID, false)
+			if err != nil {
+				return err
+			}
+			if target.Role == "admin" {
+				count, err := repo.CountActiveAdmins(ctx)
+				if err != nil {
+					return err
+				}
+				if count <= 1 {
+					return apperr.ErrLastAdminLockout
+				}
+			}
+			role := "viewer"
+			return repo.Update(ctx, targetID, CMSUserPatch{Role: &role})
+		})
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); errs[0] = demote(a1.ID.String()) }()
+	go func() { defer wg.Done(); errs[1] = demote(a2.ID.String()) }()
+	wg.Wait()
+
+	// 至少有一個被 lockout 擋下（不可能兩個都成功，否則 0 admin）
+	lockouts := 0
+	for _, err := range errs {
+		if err != nil {
+			assert.ErrorIs(t, err, apperr.ErrLastAdminLockout)
+			lockouts++
+		}
+	}
+	assert.Equal(t, 1, lockouts, "恰一個 demote 應被 last_admin_lockout 擋下")
+
+	count, err := repo.CountActiveAdmins(ctx)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, count, int64(1), "至少保留一個 admin")
 }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: PlayerLedger Backend API
-  version: 1.10.0
+  version: 1.11.0
   description: |
     PlayerLedger Backend HTTP API。
     完整認證設計見 [ADR 007](../docs/adr/007-refresh-token-rotation-and-replay-detection.md)。
@@ -25,6 +25,8 @@ tags:
     description: 認證、token 換發、session 管理
   - name: deposit-records
     description: 儲值紀錄管理（CMS 後台 + 玩家自助查詢）
+  - name: cms-users
+    description: CMS 內部人員管理（讀 / 改 / 軟刪 / 自助改密碼）
 
 security:
   - bearerAuth: []
@@ -485,6 +487,181 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
 
   # =============================================================
+  # CMS Users — 內部人員管理（cms-users-api.md，無版本號，path-level servers 覆寫）
+  # 權限：utype == cms。GET 全 CMS staff；PATCH/DELETE :id 限 admin；PATCH /me 自己。
+  # =============================================================
+  /cms/users:
+    servers:
+      - url: http://localhost:8080/api
+      - url: https://api.example.com/api
+    get:
+      tags: [cms-users]
+      summary: 列出 CMS users（全 CMS staff，分頁 + 篩選）
+      operationId: cmsListUsers
+      parameters:
+        - { name: page,            in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size,       in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - name: role
+          in: query
+          description: 可重複出現做 OR 篩選（?role=admin&role=user）
+          schema: { type: array, items: { type: string, enum: [admin, user, viewer] } }
+          style: form
+          explode: true
+        - { name: username_like,   in: query, schema: { type: string, minLength: 2 }, description: 子字串模糊比對，最少 2 字元 }
+        - { name: include_deleted, in: query, description: "僅 admin 有效；non-admin 傳了靜默忽略", schema: { type: boolean, default: false } }
+        - { name: sort,            in: query, schema: { type: string, enum: ["created_at", "-created_at", "username", "-username"], default: "-created_at" } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CMSUserListEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /cms/users/{id}:
+    servers:
+      - url: http://localhost:8080/api
+      - url: https://api.example.com/api
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [cms-users]
+      summary: 取單筆 CMS user（全 CMS staff）
+      operationId: cmsGetUser
+      parameters:
+        - { name: include_deleted, in: query, description: "僅 admin 有效", schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CMSUserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [cms-users]
+      summary: 更新 username / role（僅 admin）
+      description: |
+        部分更新；缺欄位代表不改，至少需提供一個欄位。
+        role 變更時自動 revoke target 所有 session（強制重登）。
+        不可降級最後一個 admin（422 `last_admin_lockout`）；不可改自己的 role（422 `cannot_change_own_role`）。
+      operationId: cmsUpdateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false   # 嚴格擋未知欄位
+              minProperties: 1              # 至少改一個欄位
+              properties:
+                username: { type: string, minLength: 3, maxLength: 64 }
+                role:     { type: string, enum: [admin, user, viewer] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CMSUserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [cms-users]
+      summary: 軟刪除 CMS user（僅 admin）
+      description: |
+        軟刪除並自動 revoke target 所有 session。
+        不可刪最後一個 admin（422 `last_admin_lockout`）；不可刪自己（422 `cannot_delete_self`）。
+        對已軟刪除帳號重複 DELETE 回 404（idempotency 行為，見規格 §4.4）。
+      operationId: cmsDeleteUser
+      responses:
+        '204':
+          description: Deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /cms/users/me:
+    servers:
+      - url: http://localhost:8080/api
+      - url: https://api.example.com/api
+    patch:
+      tags: [cms-users]
+      summary: 自助更新 username / password（不可改 role）
+      description: |
+        改密碼時 `current_password` 必填且須驗正確（否則 401 `current_password_mismatch`）。
+        `role` 欄位被 `additionalProperties: false` 擋下（INV-4）。
+      operationId: cmsUpdateSelf
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false   # 嚴格擋未知欄位（特別擋 role：INV-4）
+              minProperties: 1
+              properties:
+                username:         { type: string, minLength: 3, maxLength: 64 }
+                current_password: { type: string, minLength: 1, maxLength: 256, format: password }
+                new_password:     { type: string, minLength: 8, maxLength: 256, format: password }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CMSUserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: 未登入 / 改密碼但 current_password 錯
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  # =============================================================
   # Deposit Records — 玩家端（走 /api/v1 global servers）
   # 權限：utype == member；player_id 由 token claims.sub 決定，不可指定。
   # =============================================================
@@ -824,6 +1001,36 @@ components:
               items:
                 $ref: '#/components/schemas/DepositRecordPublic'
 
+    # ---- CMS Users ----
+    CMSUserDTO:
+      type: object
+      required: [id, username, role, created_at, updated_at]
+      properties:
+        id:         { type: string, format: uuid }
+        username:   { type: string }
+        role:       { type: string, enum: [admin, user, viewer] }
+        created_at: { type: string, format: date-time, description: "RFC3339 UTC" }
+        updated_at: { type: string, format: date-time, description: "RFC3339 UTC" }
+        deleted_at: { type: [string, 'null'], format: date-time, description: "僅 include_deleted=true 時可能出現" }
+
+    CMSUserResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/CMSUserDTO'
+
+    CMSUserListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/CMSUserDTO'
+
     # ---- 通用錯誤回應 ----
     ErrorResponse:
       type: object
@@ -915,6 +1122,32 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+
+    Conflict:
+      description: 資源衝突（如 username 已被占用）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            username_taken:
+              value:
+                success: false
+                request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                error: username_taken
+
+    UnprocessableEntity:
+      description: 語意違規（不變量違反 / 弱密碼）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            last_admin_lockout:
+              value:
+                success: false
+                request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                error: last_admin_lockout
 
     TooManyRequests:
       description: 觸發 rate limit
