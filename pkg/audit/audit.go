@@ -30,7 +30,7 @@ const (
 	// cms-users-api §7：admin 管理 cms_users 操作事件。
 	// cms_user.created 不在此處——新帳號建立走 /auth/register（即 EventRegisterSuccess）。
 	EventCMSUserUpdated              EventType = "cms_user.updated"
-	EventCMSUserRoleChanged          EventType = "cms_user.role_changed"           // ⚠️ 高優先級告警
+	EventCMSUserRoleChanged          EventType = "cms_user.role_changed" // ⚠️ 高優先級告警
 	EventCMSUserDeleted              EventType = "cms_user.deleted"
 	EventCMSUserSelfUpdated          EventType = "cms_user.self_updated"
 	EventCMSUserSessionsForceRevoked EventType = "cms_user.sessions_force_revoked" // role 變更 / 軟刪除附帶

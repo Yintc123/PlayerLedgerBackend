@@ -49,7 +49,7 @@ type UserRevocationStore interface {
 //     - (true, nil)  → 401 `session_revoked`（middleware 內直接寫 error code，不過 HandleError；見 §12.4）
 //     - (false, nil) → 通過
 //     - (false, err) → **fail-open**：log warn + metrics.AuthBlacklistErrors.Inc() + 通過
-//  3.5. userRevoke.RevokedAfter(claims.Subject)（§7.5，v1.11 新增）：
+//     3.5. userRevoke.RevokedAfter(claims.Subject)（§7.5，v1.11 新增）：
 //     - (0, nil)                                  → 通過（user 從未被 revoke）
 //     - (ts, nil) 且 claims.IssuedAt < ts         → 401 `session_revoked`（admin 強制踢人後簽出的舊 token）
 //     - (ts, nil) 且 claims.IssuedAt >= ts        → 通過（revoke 之後簽的 token，視為合法）
@@ -121,7 +121,7 @@ func AuthMiddleware(jwtManager Manager, blacklist AccessTokenBlacklist, userRevo
 				zap.Error(err),
 			)
 			metrics.AuthUserRevokeErrors.Inc()
-		} else if watermark > 0 && claims.IssuedAt != nil && claims.IssuedAt.Time.Unix() < watermark {
+		} else if watermark > 0 && claims.IssuedAt != nil && claims.IssuedAt.Unix() < watermark {
 			// admin 強制踢人後簽出的舊 token（見 §12.4，與 blacklist hit 共用 session_revoked 不區分原因）
 			httpx.WriteError(c, http.StatusUnauthorized, "session_revoked")
 			c.Abort()

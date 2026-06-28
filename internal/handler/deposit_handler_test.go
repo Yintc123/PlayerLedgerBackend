@@ -174,7 +174,7 @@ func doRequest(r *gin.Engine, method, path string, body any) *httptest.ResponseR
 	if body != nil {
 		b, _ = json.Marshal(body)
 	}
-	req, _ := http.NewRequest(method, path, bytes.NewBuffer(b))
+	req := httptest.NewRequest(method, path, bytes.NewBuffer(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -393,7 +393,7 @@ func TestDepositHandler_UpdateStatus_ClearNote_Returns200(t *testing.T) {
 
 	// 傳 null 值（JSON `null`）
 	rawBody := []byte(`{"display_note":null}`)
-	req, _ := http.NewRequest(http.MethodPatch, "/api/cms/deposit-records/"+rec.ID.String(), bytes.NewBuffer(rawBody))
+	req := httptest.NewRequest(http.MethodPatch, "/api/cms/deposit-records/"+rec.ID.String(), bytes.NewBuffer(rawBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

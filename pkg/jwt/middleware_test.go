@@ -206,7 +206,7 @@ func TestAuthMiddleware_UserRevoke_IatBeforeWatermark_SessionRevoked(t *testing.
 	token, claims := signValidAccessToken(t, mgr, "user-revoke-stale")
 
 	// 設 watermark = iat + 1，模擬 admin 在簽 token 之後才踢人
-	watermark := claims.IssuedAt.Time.Unix() + 1
+	watermark := claims.IssuedAt.Unix() + 1
 	r := newTestRouter(AuthMiddleware(mgr, &fakeBlacklist{}, &fakeUserRevocationStore{watermark: watermark}))
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
@@ -224,7 +224,7 @@ func TestAuthMiddleware_UserRevoke_IatAfterWatermark_Passes(t *testing.T) {
 	token, claims := signValidAccessToken(t, mgr, "user-revoke-after")
 
 	// 設 watermark = iat - 60，模擬 token 在 admin 踢人之後才簽
-	watermark := claims.IssuedAt.Time.Unix() - 60
+	watermark := claims.IssuedAt.Unix() - 60
 	r := newTestRouter(AuthMiddleware(mgr, &fakeBlacklist{}, &fakeUserRevocationStore{watermark: watermark}))
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
@@ -240,7 +240,7 @@ func TestAuthMiddleware_UserRevoke_IatEqualsWatermark_Passes(t *testing.T) {
 	mgr := NewManager(newTestConfig())
 	token, claims := signValidAccessToken(t, mgr, "user-revoke-eq")
 
-	watermark := claims.IssuedAt.Time.Unix()
+	watermark := claims.IssuedAt.Unix()
 	r := newTestRouter(AuthMiddleware(mgr, &fakeBlacklist{}, &fakeUserRevocationStore{watermark: watermark}))
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
