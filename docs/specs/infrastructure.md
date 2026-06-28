@@ -1,8 +1,14 @@
 # PlayerLedger Backend — 基礎架構規格書
 
-版本：v1.10
+版本：v1.11
 日期：2026-06-28
 
+> v1.11：新增 §7.5 `UserRevocationStore`（user-level revoke watermark）、§8.5 AuthMiddleware
+> 補步驟 3.5 檢查 `claims.iat < RevokedAfter(claims.Subject)`；§12.4 補對應 401 `session_revoked` 條目；
+> §18.2 新增 metric `auth_user_revoke_errors_total`。
+> 用途：admin 對單一 user 強制踢人（不持有 target jti 的場景，例如 cms_user role 變更、軟刪除）。
+> 與 §7.3 `AccessTokenBlacklist`（per-jti）互補；對應 cms-users-api.md v1.1 §4.3/§4.4。
+>
 > v1.10：基礎架構完整度補強 — 補齊 audit `EventRegisterSuccess` / `EventRegisterFailed` 常數
 > （§18.3.2 與 §18.3.4 整合點對齊）；釐清 `FamilyStore` 的 Lua script 載入時機改為
 > `NewFamilyStore` constructor 內自動執行，介面只暴露 `ScriptsLoaded()` 給 `/health/ready`
@@ -1470,6 +1476,53 @@ return result
 >
 > **`list_with_cleanup` 容量考量**：N = 該使用者的活躍 + 孤兒 family 數，一般情境 < 100，Lua 內 `SMEMBERS` + N 次 `GET` 完全可接受。若預期單一 user 會累積大量孤兒（罕見），可改成限制每次只掃 X 個。
 
+### 7.5 User-Level Revocation Store 介面
+
+**v1.11 新增**——用於「對單一 user 一次性廢掉所有當下還活著的 access token」。
+與 §7.3 `AccessTokenBlacklist`（per-`jti`）的差異：
+
+| 機制 | 粒度 | 觸發時機 | 寫入端知不知道 jti |
+|---|---|---|---|
+| `AccessTokenBlacklist` (§7.3) | 單 jti | Logout / RevokeAll 流程中 caller 持有自己當下的 access jti | 知道 |
+| `UserRevocationStore` (§7.5) | 整個 userID | Admin 強制踢人（role 變更、軟刪除等）；caller **不持有** target 的任何 jti | **不知道** |
+
+策略：寫入 `auth:user_revoked_after:{<userID>} = unix_ts`；AuthMiddleware verify 成功後
+比對 `claims.iat < unix_ts` 即視為 invalid（見 §8.5 步驟 3.5）。
+
+```go
+// pkg/redis/user_revocation.go
+
+type UserRevocationStore interface {
+    // Revoke 設定 userID 的 revocation watermark = now() unix seconds。
+    //   - ttl：key 存活時間；建議設為「系統最長 abs_exp」+ 安全餘量（例如 ios refresh ttl = 30d）。
+    //     ttl 過後資料自然清理；此時 user 對應的所有 access token 早已過期，不影響正確性。
+    //   - Redis 寫入失敗：回包裝 error。caller（cms_user_service.Update / SoftDelete）應 log + metric，
+    //     但不影響「廢 family」此一更關鍵步驟（family 已廢 = refresh 路徑已斷）。
+    Revoke(ctx context.Context, userID string, ttl time.Duration) error
+
+    // RevokedAfter 查詢 userID 的 revocation watermark unix seconds。
+    //   - 找不到 key                 → (0, nil)：表示「從未被 revoke」
+    //   - 命中                       → (unix_ts, nil)
+    //   - **Redis 故障（連線錯 / timeout）→ (0, err)**：由 caller fail-open。
+    //     AuthMiddleware 收到 err 後 log warn + metrics.AuthUserRevokeErrors.Inc() + 放行
+    //     （與 §7.3 黑名單同個 fail-open 邏輯）。
+    RevokedAfter(ctx context.Context, userID string) (int64, error)
+}
+
+// NewUserRevocationStore 由 *redis.Client 構造預設實作。
+// 使用 SETEX + GET 兩條原生命令，無 Lua（單 key 操作）。
+func NewUserRevocationStore(client *redis.Client) UserRevocationStore
+```
+
+> Key 命名：`auth:user_revoked_after:{<userID>}`（`{<userID>}` hash tag 與 §7.4 family
+> store 一致，未來 Cluster 環境下同一 user 的所有 auth key 落在同一 slot，避免 cross-slot 限制）。
+>
+> 對應 metric `auth_user_revoke_errors_total`，需補入 §18.2。
+>
+> **語意 watermark vs blacklist**：本介面只記「最後一次被踢的時間」，
+> 同一 user 多次被踢只覆寫不累積；查詢時用 `claims.iat < watermark` 判斷即可。
+> 比起「每被踢一次塞一筆」省 redis 容量也省查詢成本（O(1) GET vs O(n) match）。
+
 ---
 
 ## 8. JWT 模組
@@ -1845,13 +1898,27 @@ func (u UserType) IsValid() bool {
 //      - (true, nil)  → 401 `session_revoked`（middleware 內直接寫 error code，不過 HandleError；見 §12.4）
 //      - (false, nil) → 通過
 //      - (false, err) → **fail-open**：log warn + metrics.AuthBlacklistErrors.Inc() + 通過
+//   3.5. userRevoke.RevokedAfter(claims.Subject):  ← v1.11 新增（見 §7.5）
+//      - (0, nil)                                  → 通過（user 從未被 revoke）
+//      - (ts, nil) and claims.IssuedAt < ts        → 401 `session_revoked`（admin 強制踢人後簽出的舊 token）
+//      - (ts, nil) and claims.IssuedAt >= ts       → 通過（revoke 之後簽的 token，視為合法）
+//      - (0, err)                                  → **fail-open**：log warn + metrics.AuthUserRevokeErrors.Inc() + 通過
 //   4. SetClaims(c, claims) + c.Next()
 //
 // 設計權衡（fail-open vs fail-closed）：
 //   黑名單 hit 是稀有事件（管理員手動踢、改密碼、family revoke）；
 //   Redis 抖動更常見。fail-open 容忍 short-term miss，避免「Redis 抖一下整個 API 全打 401」。
 //   若安全模型要求 fail-closed，改為 (false, err) → 401 + 切換 metric 即可，介面不變。
-func AuthMiddleware(jwtManager Manager, blacklist redis.AccessTokenBlacklist) gin.HandlerFunc
+//
+// 步驟 3 與 3.5 為何同時保留：
+//   步驟 3 是「caller 知道目標 jti」的精準踢人（自己 logout、refresh rotation 連帶廢舊 access）；
+//   步驟 3.5 是「caller 不知道任何 jti」的整 user 廢票（admin 改別人 role/軟刪等）。
+//   兩條互補，不重複。
+func AuthMiddleware(
+    jwtManager Manager,
+    blacklist redis.AccessTokenBlacklist,
+    userRevoke redis.UserRevocationStore,
+) gin.HandlerFunc
 
 // RequireRole 驗證 token role 是否符合，需接在 AuthMiddleware 之後。
 //
@@ -1885,13 +1952,14 @@ func abortJSON(c *gin.Context, status int, msg string) {
 }
 ```
 
-`AuthMiddleware` 驗證流程（純 stateless 為主，黑名單僅短期強制踢人用）：
+`AuthMiddleware` 驗證流程（純 stateless 為主，黑名單與 user-revoke 僅強制踢人時用）：
 1. 從 `Authorization: Bearer <token>` 取得 access token。
 2. 呼叫 `jwtManager.VerifyAccess()` 驗證簽章、`exp`、`aud`。
-3. 檢查 `jti` 是否在短期黑名單（僅在管理員 / family revoke 連帶寫入時才會命中）。
-4. 呼叫 `SetClaims(c, claims)` 注入 context。
+3. 檢查 `jti` 是否在短期黑名單（§7.3；caller 知道 jti 時用）。
+4. 檢查 user 是否在 user-revocation watermark 之後簽發（§7.5；caller 不知 jti 時用）。
+5. 呼叫 `SetClaims(c, claims)` 注入 context。
 
-> 為何不查 `fid` 是否還在 family store：access token 只活 15 分鐘，付出 hot path Redis 查詢成本不划算。若管理員需要立刻撤銷某 family，由 logout/revoke 流程**順手把仍有效的 access jti 加入黑名單**即可（短時間 + 低頻寫入）。
+> 為何不查 `fid` 是否還在 family store：access token 只活 15 分鐘，付出 hot path Redis 查詢成本不划算。若管理員需要立刻撤銷某 family，由 logout/revoke 流程**順手把仍有效的 access jti 加入黑名單**（§7.3）或寫 user-revoke watermark（§7.5）即可。
 
 ### 8.6 Ownership Middleware（Member 資料隔離）
 
@@ -2761,6 +2829,7 @@ func validationMessage(fe validator.FieldError) string {
 | `apperr.ErrReplayDetected` | `errors.Is` | 401 | `replay_detected` | 重放偵測；前端應 UI 提示「異常登入」並走 login |
 | `apperr.ErrFamilyNotFound` | `errors.Is` | 401 | `session_not_found` | family 已被廢 / 過期 |
 | AuthMiddleware（blacklist hit） | `IsBlacklisted == true` | 401 | `session_revoked` | 強制踢人（管理員、改密碼、family revoke）；middleware 內直接寫，不過 HandleError |
+| AuthMiddleware（user-revoke hit）| `claims.iat < RevokedAfter` | 401 | `session_revoked` | Admin 對整 user 強制踢人（§7.5）；同 error code 不區分原因，避免洩漏內部判斷 |
 | `apperr.ErrForbidden` | `errors.Is` | 403 | `forbidden` | |
 | `apperr.ErrNotFound` | `errors.Is` | 404 | `resource not found` | |
 | `apperr.ErrConflict` | `errors.Is` | 409 | `resource already exists` | |
@@ -3434,6 +3503,15 @@ var (
             Help: "Errors querying access-token blacklist in AuthMiddleware (fail-open path)",
         },
     )
+
+    // AuthMiddleware 查 user-revocation watermark 時 Redis 故障的次數（fail-open，見 §7.5 / §8.5）。
+    // 與 AuthBlacklistErrors 同等告警語意（持續上升 → user-level 強制踢人可能失效）。
+    AuthUserRevokeErrors = prometheus.NewCounter(
+        prometheus.CounterOpts{
+            Name: "auth_user_revoke_errors_total",
+            Help: "Errors querying user-revocation watermark in AuthMiddleware (fail-open path)",
+        },
+    )
 )
 
 // Init 註冊應用指標。平台指標（goroutine、process、go runtime）由 client_golang
@@ -3451,6 +3529,7 @@ func Init(sqlDB *sql.DB, version, commit string) {
         AuthRotations,
         AuthReplayDetected,
         AuthBlacklistErrors,
+        AuthUserRevokeErrors,
         BuildInfo,
         // 平台指標
         collectors.NewBuildInfoCollector(),                    // build_info{...} 標出版本
