@@ -1,6 +1,6 @@
 # CMS Users API 規格書
 
-版本：v1.3（未實作）
+版本：v1.4（基建層完成，domain 待實作）
 範圍：CMS 內部人員（`cms_users` 表）的管理 API
 對應規格：`infrastructure.md` §3（OpenAPI）、§7.5（UserRevocationStore）、§8（Auth）、§10（Response）、§12（Errors）、§17（DTO）、§18.2（Metrics）
 對應 ADR：暫無
@@ -505,16 +505,19 @@ EventCMSUserSessionsForceRevoked EventType = "cms_user.sessions_force_revoked" /
 
 > `cms_user.created` 屬 `/auth/register` 端職責（已存在 `EventRegisterSuccess`），本規格不重複定義。
 
-**統一欄位**（基於現有 `AuthEvent` 結構擴充或新增 `AdminEvent`）：
+**統一欄位**（v1.4 決議：擴充既有 `AuthEvent` 加 `TargetUserID` 欄位，不另開 `AdminEvent`，避免兩個型別並行造成 caller 二選一）：
 
-| 欄位 | 說明 |
+| 欄位（Go 結構 / JSON） | 說明 |
 |---|---|
-| `type` | event type |
-| `actor_user_id` | caller userID（從 access token claims）|
-| `target_user_id` | 操作對象（self_updated 與 created 時 = actor）|
-| `request_id` | 從 ctx 取 |
-| `ip` | caller IP |
-| `extra` | role 變更時：`{"from": "user", "to": "admin"}`；改密碼時：`{"password_changed": true}` |
+| `Type` / `event_type` | event type |
+| `UserID` / `user_id` | actor 的 userID（從 access token claims）|
+| `TargetUserID` / `target_user_id` | 操作對象。**`self_updated` 時留空**（actor 即 target，由 caller 自填即可推導；空字串 JSON 不輸出此欄位以保留 `auth.*` 既有輸出格式）|
+| `request_id`（由 ctx 注入） | 從 `ctxkey.RequestID(ctx)` 取 |
+| `IP` / `ip` | caller IP |
+| `Extra` / `extra` | role 變更時：`{"from": "user", "to": "admin"}`；改密碼時：`{"password_changed": true}` |
+
+> 序列化規則：`TargetUserID == ""` 時 zap 不輸出 `target_user_id` 欄位（見 `pkg/audit/audit.go:Log`）。
+> 這讓既有 `auth.*` 事件輸出格式不變，cms_user.* 事件 caller 必填 TargetUserID。
 
 **告警建議**（規格 §18.3 既有 audit alert 機制延伸）：
 - `cms_user.role_changed` to=`admin` → 立刻發告警（升級為 admin 是高權限變更）
@@ -780,16 +783,16 @@ WHERE deleted_at IS NULL;
 ## 14. 待辦清單（給實作 PR）
 
 **Infra（依賴前置，必先做）**：
-- [ ] `pkg/redis/user_revocation.go`：實作 `UserRevocationStore`（規格見 `infrastructure.md` §7.5）
-- [ ] `pkg/jwt/middleware.go`：AuthMiddleware 加 step 3.5 user-revoke 檢查（規格見 `infrastructure.md` §8.5）；signature 加第 3 個參數 `userRevoke UserRevocationStore`
-- [ ] `pkg/metrics/metrics.go`：新增 `AuthUserRevokeErrors` + `AuditWriteErrors` counter（規格見 `infrastructure.md` §18.2 與本檔 §7）
-- [ ] `internal/repository/transactor.go`（新檔）：`Transactor` 介面 + GORM 實作 + `ctx` 注入 tx 的 pattern（本檔 §10.1）
-- [ ] 既有 repositories 改為 `dbFromCtx(ctx)` 取連線（兼容無 tx 場景，行為不變）
+- [x] `pkg/redis/user_revocation.go`：實作 `UserRevocationStore`（規格見 `infrastructure.md` §7.5）
+- [x] `pkg/jwt/middleware.go`：AuthMiddleware 加 step 3.5 user-revoke 檢查（規格見 `infrastructure.md` §8.5）；signature 加第 3 個參數 `userRevoke UserRevocationStore`
+- [x] `pkg/metrics/metrics.go`：新增 `AuthUserRevokeErrors` + `AuditWriteErrors` counter（規格見 `infrastructure.md` §18.2 與本檔 §7）
+- [x] `internal/repository/transactor.go`（新檔）：`Transactor` 介面 + GORM 實作 + `ctx` 注入 tx 的 pattern（本檔 §10.1）
+- [x] 既有 repositories 改為 `dbFromCtx(ctx)` 取連線（兼容無 tx 場景，行為不變）
 
 **Domain（本規格）**：
-- [ ] `internal/apperr/errors.go` 加 4 個新 sentinel（§8）
-- [ ] `internal/handler/error_handler.go` 加 4 個 case 映射（§8）
-- [ ] `pkg/audit/audit.go` 加 5 個 EventType 常數（§7）
+- [x] `internal/apperr/errors.go` 加 4 個新 sentinel（§8）
+- [x] `internal/handler/error_handler.go` 加 4 個 case 映射（§8）
+- [x] `pkg/audit/audit.go` 加 5 個 EventType 常數（§7）+ `AuthEvent.TargetUserID` 欄位
 - [ ] `internal/repository/cms_user_repository.go` 擴充 5 個 method：FindByID / List / Update / SoftDelete / CountActiveAdmins（§10）
 - [ ] `internal/dto/cms_user_dto.go` 新檔（§5.1）
 - [ ] `internal/service/cms_user_service.go` 新檔：constructor 含 6 個 dependency（§9）；5 個 method 含 INV / transaction / revoke / audit（§4、§6、§10.2）
@@ -830,6 +833,7 @@ WHERE deleted_at IS NULL;
 
 | 版本 | 日期 | 變更 |
 |---|---|---|
+| v1.4 | 2026-06-28 | 基建層落地完成（Infra todo 全打勾）。§7 決議「擴充既有 `AuthEvent` 加 `TargetUserID` 欄位」（之前 v1.3 留有「擴充 vs 新增 AdminEvent」二擇一）；補序列化規則「`TargetUserID==""` 時 JSON 不輸出該欄位」保留 `auth.*` 既有格式。§14 Infra 與 Domain 部分項目改為 `[x]`。 |
 | v1.3 | 2026-06-28 | 最佳實踐補強，目標：規格能 1:1 落地、實作不再回頭問。重點：§5.2 補完整 5 endpoint OpenAPI + 新增 §5.3 curl/JSON 範例；§4.1 加 List 解析規則（role 多值、username_like SQL escape、include_deleted 權限、sort 白名單）；§4.2 補 query 參數表；§4.3/§4.4 加 transaction 流程圖 + post-commit best-effort 順序 + UserRevocationStore TTL 計算公式；§4.4 補 DELETE idempotency 行為與 RFC7231 引用；§6 INV-4 補「OpenAPI additionalProperties:false + service 深度防禦」；§7 加 audit fail policy（含 `AuditWriteErrors` metric）；§9 補 6 個 constructor dependency + TTL 計算範例；§10 新增 §10.1 Transactor pattern + §10.2 service 使用範例（SELECT FOR UPDATE 子句）；§14 重組為 Infra/Domain/測試/Migration/規格同步 五區，加路由註冊順序 Go 範例 |
 | v1.2 | 2026-06-28 | 把 user-level revoke 機制正式落地到 `infrastructure.md` v1.11（§7.5 `UserRevocationStore` + §8.5 step 3.5 + §12.4 + §18.2 metric）；本檔 §4.3/§4.4/§14 改為直接引用 §7.5 而非散描述 |
 | v1.1 | 2026-06-28 | 依使用者回饋調整：移除 `POST /cms/users`（改由 `/auth/register` 公開註冊提供）；§4.3/§4.4 加入 role 變更與軟刪除的「自動 revoke target sessions」流程；新增 `cms_user.sessions_force_revoked` audit event；引入 user-level revoke 機制概念 |

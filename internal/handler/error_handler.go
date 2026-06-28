@@ -86,6 +86,17 @@ func HandleError(c *gin.Context, err error) {
 		httpx.WriteError(c, http.StatusUnauthorized, "session_revoked")
 	case errors.Is(err, apperr.ErrTooManyRequests):
 		httpx.WriteError(c, http.StatusTooManyRequests, "too many requests")
+
+	// cms-users-api §8 sentinels
+	case errors.Is(err, apperr.ErrLastAdminLockout):
+		httpx.WriteError(c, http.StatusUnprocessableEntity, "last_admin_lockout")
+	case errors.Is(err, apperr.ErrCannotDeleteSelf):
+		httpx.WriteError(c, http.StatusUnprocessableEntity, "cannot_delete_self")
+	case errors.Is(err, apperr.ErrCannotChangeOwnRole):
+		httpx.WriteError(c, http.StatusUnprocessableEntity, "cannot_change_own_role")
+	case errors.Is(err, apperr.ErrCurrentPasswordMismatch):
+		httpx.WriteError(c, http.StatusUnauthorized, "current_password_mismatch")
+
 	default:
 		requestID := logger.GetRequestID(c)
 		logger.L().Error("unhandled error",

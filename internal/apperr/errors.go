@@ -22,6 +22,12 @@ var (
 	ErrWeakPassword    = errors.New("weak password")
 	ErrInvalidClient   = errors.New("invalid client")
 	ErrTooManyRequests = errors.New("too many requests")
+
+	// CMS users domain（cms-users-api.md §8）— admin 管理 cms_users 表時用的 invariant 違反 sentinels。
+	ErrLastAdminLockout        = errors.New("last admin lockout")
+	ErrCannotDeleteSelf        = errors.New("cannot delete self")
+	ErrCannotChangeOwnRole     = errors.New("cannot change own role")
+	ErrCurrentPasswordMismatch = errors.New("current password mismatch")
 )
 
 // AppError 應用層錯誤，包含錯誤碼和細節

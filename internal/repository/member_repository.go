@@ -29,7 +29,7 @@ func NewMemberRepository(db *gorm.DB) MemberRepository {
 // FindByUsername 按用戶名查找。
 func (r *memberRepository) FindByUsername(ctx context.Context, username string) (*model.Member, error) {
 	var member model.Member
-	if err := r.db.WithContext(ctx).Where("username = ?", username).First(&member).Error; err != nil {
+	if err := dbFromCtx(ctx, r.db).WithContext(ctx).Where("username = ?", username).First(&member).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, apperr.ErrNotFound
 		}

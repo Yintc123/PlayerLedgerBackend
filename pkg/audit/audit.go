@@ -26,18 +26,31 @@ const (
 	EventLogout          EventType = "auth.logout"
 	EventSessionRevoked  EventType = "auth.session_revoked"
 	EventRevokeAll       EventType = "auth.revoke_all"
+
+	// cms-users-api §7：admin 管理 cms_users 操作事件。
+	// cms_user.created 不在此處——新帳號建立走 /auth/register（即 EventRegisterSuccess）。
+	EventCMSUserUpdated              EventType = "cms_user.updated"
+	EventCMSUserRoleChanged          EventType = "cms_user.role_changed"           // ⚠️ 高優先級告警
+	EventCMSUserDeleted              EventType = "cms_user.deleted"
+	EventCMSUserSelfUpdated          EventType = "cms_user.self_updated"
+	EventCMSUserSessionsForceRevoked EventType = "cms_user.sessions_force_revoked" // role 變更 / 軟刪除附帶
 )
 
 // AuthEvent 安全事件的結構化內容（§18.3.2）。
 // Extra 給事件特有欄位用，例如 replay_detected 帶 {presented_jti, current_jti, delta_sec}。
+//
+// TargetUserID 用於「actor 對另一 user 動作」的事件（cms-users-api §7 cms_user.*）：
+//   - auth.*  事件：actor 即 target，TargetUserID 留空，JSON 不輸出 target_user_id 欄位。
+//   - cms_user.* 事件：UserID = actor（操作者 admin），TargetUserID = 被操作對象。
 type AuthEvent struct {
-	Type      EventType
-	UserID    string // actor；未登入事件（如 login_failed）可空
-	FamilyID  string // 事件涉及的 family（若有）
-	ClientID  string
-	IP        string
-	UserAgent string
-	Extra     map[string]any
+	Type         EventType
+	UserID       string // actor；未登入事件（如 login_failed）可空
+	TargetUserID string // 被操作對象（cms_user.* 事件用；auth.* 留空）
+	FamilyID     string // 事件涉及的 family（若有）
+	ClientID     string
+	IP           string
+	UserAgent    string
+	Extra        map[string]any
 }
 
 // Logger audit logger 唯一介面（§18.3.2）。
@@ -124,7 +137,7 @@ func newAuditCore(path string) (zapcore.Core, error) {
 // 不手動寫入 timestamp 欄位——encoder 已設 TimeKey: "timestamp" 自動注入；
 // 重複 zap.String("timestamp", ...) 會被 encoder 覆蓋或產生未定義行為。
 func (l *zapAuditLogger) Log(ctx context.Context, e AuthEvent) {
-	l.z.Info(string(e.Type),
+	fields := []zap.Field{
 		zap.String("event_type", string(e.Type)),
 		zap.String("request_id", ctxkey.RequestID(ctx)),
 		zap.String("user_id", e.UserID),
@@ -133,7 +146,11 @@ func (l *zapAuditLogger) Log(ctx context.Context, e AuthEvent) {
 		zap.String("ip", e.IP),
 		zap.String("user_agent", e.UserAgent),
 		zap.Any("extra", e.Extra),
-	)
+	}
+	if e.TargetUserID != "" {
+		fields = append(fields, zap.String("target_user_id", e.TargetUserID))
+	}
+	l.z.Info(string(e.Type), fields...)
 }
 
 // Sync flush 內部 buffer（§18.3.3）。graceful shutdown 必呼叫，且早於 app logger Sync。

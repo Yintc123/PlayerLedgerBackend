@@ -31,7 +31,7 @@ func NewCMSUserRepository(db *gorm.DB) CMSUserRepository {
 // FindByUsername 按用戶名查找。
 func (r *cmsUserRepository) FindByUsername(ctx context.Context, username string) (*model.CMSUser, error) {
 	var user model.CMSUser
-	if err := r.db.WithContext(ctx).Where("username = ?", username).First(&user).Error; err != nil {
+	if err := dbFromCtx(ctx, r.db).WithContext(ctx).Where("username = ?", username).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, apperr.ErrNotFound
 		}
@@ -42,7 +42,7 @@ func (r *cmsUserRepository) FindByUsername(ctx context.Context, username string)
 
 // Create 創建新用戶。
 func (r *cmsUserRepository) Create(ctx context.Context, u *model.CMSUser) error {
-	if err := r.db.WithContext(ctx).Create(u).Error; err != nil {
+	if err := dbFromCtx(ctx, r.db).WithContext(ctx).Create(u).Error; err != nil {
 		// PostgreSQL unique constraint violation = 23505
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {

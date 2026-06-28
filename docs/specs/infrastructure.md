@@ -1,8 +1,15 @@
 # PlayerLedger Backend — 基礎架構規格書
 
-版本：v1.11
+版本：v1.12
 日期：2026-06-28
 
+> v1.12：§18.2 新增 metric `audit_write_errors_total`（audit primary-sink 寫入失敗時 fallbackSyncer
+> 自動 +1，對應「§18.3.1 永不吞錯」原則 + cms-users-api.md §7 audit fail policy）。
+> §18.3.2 `AuthEvent` 加 `TargetUserID` 欄位（cms_user.* 事件 actor 對另一 user 動作時填；
+> JSON 序列化條件性輸出，留空時不輸出該欄位，保留 `auth.*` 既有格式）。
+> §18.3.2 EventType 新增 5 個 `cms_user.*` 常數（updated / role_changed / deleted /
+> self_updated / sessions_force_revoked），對應 cms-users-api.md §7。
+>
 > v1.11：新增 §7.5 `UserRevocationStore`（user-level revoke watermark）、§8.5 AuthMiddleware
 > 補步驟 3.5 檢查 `claims.iat < RevokedAfter(claims.Subject)`；§12.4 補對應 401 `session_revoked` 條目；
 > §18.2 新增 metric `auth_user_revoke_errors_total`。
@@ -3512,6 +3519,16 @@ var (
             Help: "Errors querying user-revocation watermark in AuthMiddleware (fail-open path)",
         },
     )
+
+    // Audit primary-sink 寫入失敗 +1（v1.12 新增；對應 §18.3.1 fallbackSyncer 永不吞錯原則 +
+    // cms-users-api.md §7 audit fail policy）。短期上升 → 主 sink IO 抖動；持續上升 → 主 sink
+    // 完全失效，需確認 disk / mount / SIEM ingestion，否則安全事件最終只剩 stderr 兜底。
+    AuditWriteErrors = prometheus.NewCounter(
+        prometheus.CounterOpts{
+            Name: "audit_write_errors_total",
+            Help: "Audit log primary-sink write failures that triggered stderr fallback (§18.3.1)",
+        },
+    )
 )
 
 // Init 註冊應用指標。平台指標（goroutine、process、go runtime）由 client_golang
@@ -3530,6 +3547,7 @@ func Init(sqlDB *sql.DB, version, commit string) {
         AuthReplayDetected,
         AuthBlacklistErrors,
         AuthUserRevokeErrors,
+        AuditWriteErrors,
         BuildInfo,
         // 平台指標
         collectors.NewBuildInfoCollector(),                    // build_info{...} 標出版本
@@ -3601,18 +3619,33 @@ const (
     EventLogout          EventType = "auth.logout"
     EventSessionRevoked  EventType = "auth.session_revoked"
     EventRevokeAll       EventType = "auth.revoke_all"
+
+    // cms-users-api §7：admin 管理 cms_users 操作事件（v1.12 新增）。
+    // cms_user.created 不在此列——新帳號建立走 /auth/register（即 EventRegisterSuccess）。
+    EventCMSUserUpdated              EventType = "cms_user.updated"
+    EventCMSUserRoleChanged          EventType = "cms_user.role_changed"           // ⚠️ 高優先級告警
+    EventCMSUserDeleted              EventType = "cms_user.deleted"
+    EventCMSUserSelfUpdated          EventType = "cms_user.self_updated"
+    EventCMSUserSessionsForceRevoked EventType = "cms_user.sessions_force_revoked" // role 變更 / 軟刪除附帶
 )
 
 // AuthEvent — 安全事件的結構化內容。Extra 給事件特有欄位用，
 // 例如 replay_detected 帶 {presented_jti, current_jti, delta_sec}。
+//
+// TargetUserID（v1.12 新增）用於「actor 對另一 user 動作」的事件（cms_user.*）：
+//   - auth.*  事件：actor 即 target，TargetUserID 留空；JSON 序列化時不輸出 target_user_id 欄位
+//     （保留既有輸出格式，與舊版相容）。
+//   - cms_user.* 事件：UserID = actor（操作者 admin），TargetUserID = 被操作對象。
+//     cms_user.self_updated 例外可留空（actor 即 target）。
 type AuthEvent struct {
-    Type      EventType
-    UserID    string         // actor；未登入事件（如 login_failed）可空
-    FamilyID  string         // 事件涉及的 family（若有）
-    ClientID  string
-    IP        string
-    UserAgent string
-    Extra     map[string]any
+    Type         EventType
+    UserID       string         // actor；未登入事件（如 login_failed）可空
+    TargetUserID string         // 被操作對象（cms_user.* 必填；auth.* 留空）
+    FamilyID     string         // 事件涉及的 family（若有）
+    ClientID     string
+    IP           string
+    UserAgent    string
+    Extra        map[string]any
 }
 
 // Logger — audit logger 唯一介面。實作必須 thread-safe，
@@ -3658,7 +3691,7 @@ func NewZapLogger(path string) (Logger, error) {
 // 內部 fallback：若 zap core 寫主 sink 失敗，writeSyncer 會自動降級寫 os.Stderr，
 // 確保「永不吞錯」（§18.3.1 / Logger interface 註解）。
 func (l *zapAuditLogger) Log(ctx context.Context, e AuthEvent) {
-    l.z.Info(string(e.Type),
+    fields := []zap.Field{
         zap.String("event_type", string(e.Type)),
         zap.String("request_id", ctxkey.RequestID(ctx)),  // 從 pkg/ctxkey 取，不 import pkg/logger（§2.1）
         zap.String("user_id", e.UserID),
@@ -3667,7 +3700,12 @@ func (l *zapAuditLogger) Log(ctx context.Context, e AuthEvent) {
         zap.String("ip", e.IP),
         zap.String("user_agent", e.UserAgent),
         zap.Any("extra", e.Extra),
-    )
+    }
+    // 條件性輸出：TargetUserID 空字串時不輸出 target_user_id 欄位，保留 auth.* 既有格式。
+    if e.TargetUserID != "" {
+        fields = append(fields, zap.String("target_user_id", e.TargetUserID))
+    }
+    l.z.Info(string(e.Type), fields...)
 }
 
 // Sync flush 內部 buffer。graceful shutdown 必呼叫。
