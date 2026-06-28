@@ -1,0 +1,460 @@
+openapi: 3.1.0
+info:
+  title: PlayerLedger Backend API
+  version: 0.1.0
+  description: |
+    PlayerLedger Backend HTTP API。
+    完整認證設計見 [ADR 007](../docs/adr/007-refresh-token-rotation-and-replay-detection.md)。
+
+    **認證模型**：純 JWT，不走 cookie。Access token 走 `Authorization: Bearer`，refresh token 走 request body。
+    Refresh token 採 family-based rotation + replay detection + 10 秒 grace window。
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: 本地開發
+  - url: https://api.example.com/api/v1
+    description: 正式環境
+
+tags:
+  - name: auth
+    description: 認證、token 換發、session 管理
+
+security:
+  - bearerAuth: []
+
+paths:
+  # =============================================================
+  # Authentication
+  # =============================================================
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: 帳密登入，簽發 access + refresh token，建立新 family
+      operationId: login
+      security: []  # 公開 endpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 登入成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPairEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: 帳密錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_credentials:
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: unauthorized
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: 用 refresh token 換新的 access + refresh token（rotation）
+      description: |
+        每次成功 rotation 後 server 會在 10 秒 grace window 內接受同 jti 重送（網路重試），
+        超過 window 或 jti 不符 current → 觸發重放偵測，整 family 廢棄並寫 audit log。
+
+        **前端必須**：refresh 失敗一律走 login 流程，**不可自動重試**，
+        否則會誤觸 replay 偵測導致使用者被踢。
+      operationId: refresh
+      security: []  # 用 refresh token 自我認證
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: rotation 成功；或 grace window 命中後重簽等價 token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPairEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: refresh token 無效；error 字串細分以利前端區分行為
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                token_expired:
+                  summary: refresh token exp 超過 → 走 login
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: token_expired
+                absolute_expired:
+                  summary: family abs_exp 超過 → 強制 login
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: absolute_expired
+                invalid_token:
+                  summary: 簽章 / iss / aud 等驗證失敗
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: invalid_token
+                replay_detected:
+                  summary: 偵測到重放，family 已廢；UI 應提示「異常登入」
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: replay_detected
+                session_not_found:
+                  summary: family 已被廢 / 已過期
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: session_not_found
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: 登出當前裝置（廢掉 access token 對應的 family）
+      operationId: logout
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '204':
+          description: 登出成功
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/sessions:
+    get:
+      tags: [auth]
+      summary: 列出我目前所有登入裝置（family 清單）
+      description: 採 lazy cleanup，回傳實際存活的 family（孤兒 fid 會順手清掉）。
+      operationId: listSessions
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/sessions/{fid}:
+    delete:
+      tags: [auth]
+      summary: 撤銷指定裝置（在裝置清單頁按「登出此裝置」）
+      description: 不允許撤銷自己當前的 family（請改用 `/auth/logout`）。
+      operationId: revokeSession
+      parameters:
+        - name: fid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: 要撤銷的 family id
+      responses:
+        '204':
+          description: 撤銷成功
+        '400':
+          description: 不能撤銷自己
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                use_logout_instead:
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: use_logout_instead
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /auth/sessions/revoke-all:
+    post:
+      tags: [auth]
+      summary: 全裝置登出（廢掉自己所有 family，含當前裝置）
+      description: 適用於改密碼後一鍵全裝置登出、或察覺帳號異常時的緊急動作。
+      operationId: revokeAllSessions
+      responses:
+        '204':
+          description: 全部撤銷成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+# =============================================================
+# Reusable components
+# =============================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Access token JWT（HS256）。簽章後內含 `iss`、`sub`、`utype`、`role`、`fid`、`aud`、`exp`、`iat`、`jti`。
+        每 15 分鐘過期，前端用 refresh token 自動換發。
+
+  schemas:
+    # ---- 認證請求 ----
+    ClientID:
+      type: string
+      description: 區分前端類型，server 對照 ClientPolicies 取不同 TTL。
+      enum:
+        - cms-web
+        - public-web
+        - ios-app
+        - android-app
+
+    LoginRequest:
+      type: object
+      required: [username, password, client_id]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 128
+        password:
+          type: string
+          minLength: 1
+          maxLength: 256
+          format: password
+        client_id:
+          $ref: '#/components/schemas/ClientID'
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          description: 上一次 login / refresh 取得的 refresh token JWT
+          minLength: 1
+
+    LogoutRequest:
+      type: object
+      description: 可選；提供時驗證 refresh token 與 access token 的 fid 一致才登出
+      properties:
+        refresh_token:
+          type: string
+
+    # ---- 通用成功 envelope ----
+    # 所有成功回應一律包在此 envelope 內，對齊 infrastructure §10 的 Response[T] / OK()/OKList()。
+    # 每個端點以 allOf 引入此 envelope 並覆寫 data 為實際資料型別。
+    SuccessEnvelope:
+      type: object
+      required: [success, request_id, data]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        request_id:
+          type: string
+          description: 對應 server log 與 audit log；客服回報請提供
+        data:
+          description: 端點特定的資料；以 allOf 覆寫實際型別
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+      additionalProperties: false
+
+    PageMeta:
+      type: object
+      required: [page, page_size, total]
+      properties:
+        page:
+          type: integer
+          format: int32
+          minimum: 1
+        page_size:
+          type: integer
+          format: int32
+          minimum: 1
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+
+    # ---- 認證回應 ----
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in, refresh_expires_in]
+      properties:
+        access_token:
+          type: string
+          description: HS256 簽署的 JWT；放 Authorization header
+        refresh_token:
+          type: string
+          description: HS256 簽署的 JWT；下次 refresh 放 body
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          format: int32
+          description: access_token 有效秒數（= JWTConfig.AccessTTL）
+          example: 900
+        refresh_expires_in:
+          type: integer
+          format: int32
+          description: refresh_token 有效秒數（= ClientPolicy.RefreshTTL）
+          example: 3600
+
+    TokenPairEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TokenPair'
+
+    SessionInfo:
+      type: object
+      required: [fid, client_id, device_label, ip_at_login, created_at, last_rotated_at, is_current]
+      properties:
+        fid:
+          type: string
+          format: uuid
+        client_id:
+          $ref: '#/components/schemas/ClientID'
+        device_label:
+          type: string
+          description: 從 User-Agent 解析的人類可讀標籤（如 "Chrome 120 on macOS"）
+          example: Chrome 120 on macOS
+        ip_at_login:
+          type: string
+          example: 192.0.2.1
+        created_at:
+          type: string
+          format: date-time
+        last_rotated_at:
+          type: string
+          format: date-time
+        is_current:
+          type: boolean
+          description: 此 family 是否為當前 request 所用 family
+
+    SessionListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/SessionInfo'
+
+    # ---- 通用錯誤回應 ----
+    ErrorResponse:
+      type: object
+      required: [success, request_id, error]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        request_id:
+          type: string
+          description: 對應 server log 與 audit log；客服回報時請提供
+        error:
+          type: string
+          description: |
+            穩定的 error code（snake_case）。前端應據此判定行為，不要解析人類可讀訊息：
+
+            | error | 場景 |
+            |---|---|
+            | `unauthorized` | 一般未授權 |
+            | `forbidden` | 已登入但權限不足 |
+            | `invalid input` | request body / query 格式錯誤 |
+            | `invalid_client` | 未知 / 不支援的 client_id |
+            | `token_expired` | access / refresh exp 過期；前端 retry refresh |
+            | `absolute_expired` | refresh.abs_exp 過期；強制 login，**不可** retry |
+            | `invalid_token` | 簽章 / iss / aud 失敗；走 login |
+            | `replay_detected` | 重放偵測；UI 提示「異常登入」走 login |
+            | `session_not_found` | family 已廢 / 已過期 |
+            | `use_logout_instead` | 嘗試撤銷自己當前 family |
+            | `resource not found` | 一般 404 |
+            | `resource already exists` | 409 conflict |
+            | `too many requests` | 限流 |
+            | `internal server error` | 500 |
+        details:
+          type: array
+          description: 僅 validation 錯誤時出現
+          items:
+            $ref: '#/components/schemas/FieldError'
+
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+
+  # ---- 共用 response 模板 ----
+  responses:
+    BadRequest:
+      description: 請求格式或內容錯誤
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    Unauthorized:
+      description: access token 缺失或無效
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            unauthorized:
+              value:
+                success: false
+                request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                error: unauthorized
+
+    NotFound:
+      description: 資源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    TooManyRequests:
+      description: 觸發 rate limit
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: 建議重試前等待秒數
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
