@@ -10,80 +10,70 @@ import (
 	"gorm.io/gorm"
 )
 
-// HealthHandler 健康检查
+// HealthHandler 健康檢查
 type HealthHandler struct {
-	db         *gorm.DB
-	redisOnce  *redis.Client
+	db          *gorm.DB
+	redisClient *redis.Client
 	familyReady func() bool
 }
 
-// NewHealthHandler 创建健康检查 handler
+// NewHealthHandler 建立不含 Redis 的健康檢查 handler（僅 /health）
 func NewHealthHandler(db *gorm.DB) *HealthHandler {
 	return &HealthHandler{db: db}
 }
 
-// NewHealthHandlerWithRedis 创建含 Redis + FamilyStore 的健康检查 handler
-func NewHealthHandlerWithRedis(db *gorm.DB, redis *redis.Client, familyReady func() bool) *HealthHandler {
+// NewHealthHandlerWithRedis 建立含 Redis + FamilyStore 的健康檢查 handler
+func NewHealthHandlerWithRedis(db *gorm.DB, r *redis.Client, familyReady func() bool) *HealthHandler {
 	return &HealthHandler{
-		db:         db,
-		redisOnce:  redis,
+		db:          db,
+		redisClient: r,
 		familyReady: familyReady,
 	}
 }
 
-// GetHealth 返回简单的健康状态
-// GET /health
-func (h *HealthHandler) GetHealth(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"status": "ok",
-	})
+// Live GET /health — 簡單存活探測，僅確認 process 能回應（§11.3）。
+func (h *HealthHandler) Live(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// GetReadiness 返回就绪状态（检查依赖服务，§11.3）
-// GET /health/ready
-func (h *HealthHandler) GetReadiness(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+// Ready GET /health/ready — 就緒探測，逐一檢查所有依賴並回傳各元件狀態（§11.3）。
+// 任一元件不健康回 503；response body 永遠包含所有元件狀態便於診斷。
+func (h *HealthHandler) Ready(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 	defer cancel()
 
-	// 检查数据库
+	status := gin.H{
+		"database":              "ok",
+		"redis":                 "ok",
+		"family_store_scripts":  "ok",
+	}
+	healthy := true
+
+	// 檢查 database
 	sqlDB, err := h.db.DB()
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"status": "not_ready",
-			"reason": "database unavailable",
-		})
-		return
+	if err != nil || sqlDB.PingContext(ctx) != nil {
+		status["database"] = "error"
+		healthy = false
 	}
 
-	if err := sqlDB.PingContext(ctx); err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"status": "not_ready",
-			"reason": "database ping failed",
-		})
-		return
-	}
-
-	// 检查 Redis（可选，仅在配置时）
-	if h.redisOnce != nil {
-		if err := h.redisOnce.Ping(ctx).Err(); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"status": "not_ready",
-				"reason": "redis unavailable",
-			})
-			return
+	// 檢查 Redis（若已設定）
+	if h.redisClient != nil {
+		if err := h.redisClient.Ping(ctx).Err(); err != nil {
+			status["redis"] = "error"
+			healthy = false
 		}
 	}
 
-	// 检查 FamilyStore Lua 脚本（可选，§7.4）
+	// 檢查 FamilyStore Lua 腳本（若已設定）
 	if h.familyReady != nil && !h.familyReady() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"status": "not_ready",
-			"reason": "family store scripts not loaded",
-		})
+		status["family_store_scripts"] = "error"
+		healthy = false
+	}
+
+	if !healthy {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": status})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"status": "ready",
-	})
+	c.JSON(http.StatusOK, gin.H{"status": status})
 }

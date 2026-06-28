@@ -23,10 +23,9 @@ func TestCalcPageMeta(t *testing.T) {
 	assert.Equal(t, meta.Page, 1)
 	assert.Equal(t, meta.PageSize, 20)
 	assert.Equal(t, meta.Total, int64(50))
-	assert.Equal(t, meta.TotalPage, 3)
 }
 
 func TestCalcPageMeta_Zero(t *testing.T) {
 	meta := CalcPageMeta(1, 20, 0)
-	assert.Equal(t, meta.TotalPage, 1)
+	assert.Equal(t, meta.Total, int64(0))
 }

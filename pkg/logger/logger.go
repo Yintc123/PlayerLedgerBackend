@@ -4,35 +4,35 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	"github.com/yintengching/playerledger/config"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
-// 全局 logger 实例，使用 atomic.Pointer 保证线程安全
+// global logger instance（atomic 保證 thread-safe）。
+// Init 之前 L() 回 zap.NewNop()，避免 init 順序錯誤導致 nil deref。
 var global atomic.Pointer[zap.Logger]
 
 func init() {
-	// 初始化为 nop logger，避免 init 之前调用 L() 时 panic
 	global.Store(zap.NewNop())
 }
 
-// Init 初始化全局 logger
-func Init(format string, level string, service string, env string) error {
-	cfg := zap.NewProductionConfig()
+// Init 用 LogConfig + env 初始化全域 logger（§5.2）。
+// 重複呼叫視為 no-op 且仍正常初始化（測試用途）。
+func Init(logCfg config.LogConfig, env string) error {
+	var cfg zap.Config
 
-	// 设置日志格式
-	switch format {
+	switch logCfg.Format {
 	case "console":
 		cfg = zap.NewDevelopmentConfig()
 		cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	case "json":
 		cfg = zap.NewProductionConfig()
 	default:
-		return fmt.Errorf("unsupported log format: %s", format)
+		return fmt.Errorf("unsupported log format: %s", logCfg.Format)
 	}
 
-	// 设置日志级别
-	switch level {
+	switch logCfg.Level {
 	case "debug":
 		cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
 	case "info":
@@ -42,37 +42,34 @@ func Init(format string, level string, service string, env string) error {
 	case "error":
 		cfg.Level = zap.NewAtomicLevelAt(zapcore.ErrorLevel)
 	default:
-		return fmt.Errorf("unsupported log level: %s", level)
+		return fmt.Errorf("unsupported log level: %s", logCfg.Level)
 	}
 
-	// 添加基础字段
-	fields := []zap.Field{
-		zap.String("service", service),
-		zap.String("env", env),
-	}
-
-	logger, err := cfg.Build(zap.AddCallerSkip(1))
+	l, err := cfg.Build(zap.AddCallerSkip(1))
 	if err != nil {
 		return fmt.Errorf("build logger: %w", err)
 	}
 
-	logger = logger.With(fields...)
-	global.Store(logger)
+	l = l.With(
+		zap.String("service", logCfg.Service),
+		zap.String("env", env),
+	)
+	global.Store(l)
 
 	return nil
 }
 
-// L 获取全局 logger 实例
+// L 取得全域 logger（Init 之前回 zap.NewNop()）。
 func L() *zap.Logger {
 	return global.Load()
 }
 
-// With 在全局 logger 上添加字段
+// With 在全域 logger 上加 fields。
 func With(fields ...zap.Field) *zap.Logger {
 	return L().With(fields...)
 }
 
-// Sync 刷新日志缓冲
+// Sync 刷新日誌緩衝。
 func Sync() error {
 	return L().Sync()
 }

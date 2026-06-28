@@ -8,7 +8,8 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// GinLogger 记录每个 request 的访问日志
+// GinLogger 記錄每個 request 的 access log（§5.3）。
+// skipPaths 中的路徑（以 c.FullPath() 比對）不寫入日誌，避免健康檢查污染。
 func GinLogger(skipPaths ...string) gin.HandlerFunc {
 	skipMap := make(map[string]bool)
 	for _, p := range skipPaths {
@@ -20,15 +21,14 @@ func GinLogger(skipPaths ...string) gin.HandlerFunc {
 
 		c.Next()
 
-		// 检查是否应该跳过
-		if skipMap[c.Request.URL.Path] {
+		// skip 比對使用 c.FullPath()（模板路徑），避免 path param 高基數問題
+		if skipMap[c.FullPath()] {
 			return
 		}
 
 		latency := time.Since(start).Milliseconds()
 		statusCode := c.Writer.Status()
 
-		// 确定日志级别
 		level := zapcore.InfoLevel
 		if statusCode >= 400 && statusCode < 500 {
 			level = zapcore.WarnLevel
@@ -48,7 +48,6 @@ func GinLogger(skipPaths ...string) gin.HandlerFunc {
 			zap.String("request_id", GetRequestID(c)),
 		}
 
-		// 只在有错误时添加 errors 字段
 		if len(c.Errors) > 0 {
 			fields = append(fields, zap.String("errors", c.Errors.ByType(gin.ErrorTypePrivate).String()))
 		}

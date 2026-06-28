@@ -14,7 +14,7 @@ import (
 // TestConnect_ValidDSN 验证 Connect 能成功使用有效 DSN 连接
 func TestConnect_ValidDSN_Success(t *testing.T) {
 	// 初始化日志（必须在 Connect 之前，因为 newGormLogger 依赖全局 logger）
-	err := logger.Init("json", "info", "test", "dev")
+	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
 	require.NoError(t, err)
 
 	cfg := config.DatabaseConfig{
@@ -55,7 +55,7 @@ func TestConnect_ValidDSN_Success(t *testing.T) {
 // TestConnect_InvalidConfig 验证无效配置返回 error
 func TestConnect_InvalidConfig_ReturnsError(t *testing.T) {
 	// 初始化日志
-	err := logger.Init("json", "info", "test", "dev")
+	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
 	require.NoError(t, err)
 
 	cfg := config.DatabaseConfig{
@@ -111,7 +111,7 @@ func TestConnect_DSN_ContainsStatementTimeout(t *testing.T) {
 // TestConnect_GormConfig_HasZapLogger 验证 GORM 配置使用 zapgorm2 logger
 func TestConnect_GormConfig_HasZapLogger(t *testing.T) {
 	// 初始化日志
-	err := logger.Init("json", "info", "test", "dev")
+	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
 	require.NoError(t, err)
 
 	cfg := config.DatabaseConfig{
@@ -144,7 +144,7 @@ func TestConnect_GormConfig_HasZapLogger(t *testing.T) {
 // TestConnect_PrepareStmt_Configuration 验证 PrepareStmt 配置被正确应用
 func TestConnect_PrepareStmt_Configuration(t *testing.T) {
 	// 初始化日志
-	err := logger.Init("json", "info", "test", "dev")
+	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -189,7 +189,7 @@ func TestConnect_PrepareStmt_Configuration(t *testing.T) {
 // TestNewGormLogger_IntegratesZapLogger 验证 newGormLogger 正确集成 zap logger
 func TestNewGormLogger_IntegratesZapLogger(t *testing.T) {
 	// 初始化日志
-	err := logger.Init("json", "info", "test", "dev")
+	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
 	require.NoError(t, err)
 
 	gormLogger := newGormLogger()
@@ -201,7 +201,7 @@ func TestNewGormLogger_IntegratesZapLogger(t *testing.T) {
 // TestLogger_Integration 验证 zap logger 与 GORM 的集成
 func TestLogger_Integration_WithZap(t *testing.T) {
 	// 初始化日志
-	err := logger.Init("json", "info", "test", "dev")
+	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
 	require.NoError(t, err)
 
 	l := logger.L()

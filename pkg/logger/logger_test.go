@@ -5,11 +5,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/yintengching/playerledger/config"
 	"go.uber.org/zap"
 )
 
 func TestInit_ValidFormat_JSON(t *testing.T) {
-	err := Init("json", "info", "test-service", "dev")
+	err := Init(config.LogConfig{Format: "json", Level: "info", Service: "test-service"}, "dev")
 	require.NoError(t, err)
 
 	logger := L()
@@ -18,7 +19,7 @@ func TestInit_ValidFormat_JSON(t *testing.T) {
 }
 
 func TestInit_ValidFormat_Console(t *testing.T) {
-	err := Init("console", "debug", "test-service", "dev")
+	err := Init(config.LogConfig{Format: "console", Level: "debug", Service: "test-service"}, "dev")
 	require.NoError(t, err)
 
 	logger := L()
@@ -26,7 +27,7 @@ func TestInit_ValidFormat_Console(t *testing.T) {
 }
 
 func TestInit_InvalidFormat(t *testing.T) {
-	err := Init("invalid", "info", "test-service", "dev")
+	err := Init(config.LogConfig{Format: "invalid", Level: "info", Service: "test-service"}, "dev")
 	require.Error(t, err)
 }
 
@@ -36,7 +37,7 @@ func TestL_BeforeInit_ReturnsNop(t *testing.T) {
 }
 
 func TestWith_AddsFields(t *testing.T) {
-	Init("json", "info", "test-service", "dev")
+	Init(config.LogConfig{Format: "json", Level: "info", Service: "test-service"}, "dev") //nolint:errcheck
 	loggerWithFields := With(zap.String("test", "value"))
 	assert.NotNil(t, loggerWithFields)
 }

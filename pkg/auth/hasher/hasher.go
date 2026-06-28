@@ -2,24 +2,23 @@ package hasher
 
 import "errors"
 
-// ErrMismatch 密码不匹配时返回。
+// ErrMismatch 密碼不匹配時回傳。
 var ErrMismatch = errors.New("password mismatch")
 
-// Hasher 定义密码哈希接口。
-// 避免直接使用 golang.org/x/crypto/bcrypt，便于未来换 argon2id。
+// Hasher 定義密碼雜湊介面（§8.3.2）。
+// 避免直接使用 golang.org/x/crypto/bcrypt，便於未來換 argon2id。
 type Hasher interface {
-	// Hash 对密码进行哈希，返回哈希值字符串。
+	// Hash 對密碼進行雜湊，回傳雜湊值字串。
 	Hash(password string) (string, error)
 
-	// Compare 比较哈希值与明文密码。
-	// 密码匹配返回 (true, nil)。
-	// 密码不匹配返回 (false, ErrMismatch)。
-	// 其他错误返回 (false, err)。
-	Compare(hash, password string) (bool, error)
+	// Compare 比較雜湊值與明文密碼（§8.3.2）。
+	// 匹配        → nil
+	// 密碼不匹配  → ErrMismatch
+	// 其他系統錯誤 → error
+	Compare(hash, plain string) error
 }
 
-// PolicyOf 从配置中读取 bcrypt cost 参数。
-// cost 必须在 [10, 15] 范围内（bcrypt 要求 4-31，但生产环境建议 10-15）。
+// PolicyOf 從設定中讀取 bcrypt cost 參數。
 func PolicyOf(cost int) int {
 	return cost
 }

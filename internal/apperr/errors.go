@@ -5,26 +5,26 @@ import (
 	"fmt"
 )
 
-// Domain error sentinel 值
+// Domain error sentinel 值（§12.2）
 var (
-	ErrNotFound           = errors.New("resource not found")
-	ErrUnauthorized       = errors.New("unauthorized")
-	ErrForbidden          = errors.New("forbidden")
-	ErrConflict           = errors.New("conflict")
-	ErrInvalidInput       = errors.New("invalid input")
-	ErrTokenExpired       = errors.New("token_expired")
-	ErrAbsoluteExpired    = errors.New("absolute_expired")
-	ErrInvalidToken       = errors.New("invalid_token")
-	ErrReplayDetected     = errors.New("replay_detected")
-	ErrSessionNotFound    = errors.New("session_not_found")
-	ErrSessionRevoked     = errors.New("session_revoked")
-	ErrUsernameTaken      = errors.New("username_taken")
-	ErrWeakPassword       = errors.New("weak_password")
-	ErrInvalidClient      = errors.New("invalid_client")
-	ErrTooManyRequests    = errors.New("too many requests")
+	ErrNotFound        = errors.New("resource not found")
+	ErrUnauthorized    = errors.New("unauthorized")
+	ErrForbidden       = errors.New("forbidden")
+	ErrConflict        = errors.New("resource already exists")
+	ErrInvalidInput    = errors.New("invalid input")
+	ErrTokenExpired    = errors.New("token expired")
+	ErrAbsoluteExpired = errors.New("absolute expired")
+	ErrInvalidToken    = errors.New("invalid token")
+	ErrReplayDetected  = errors.New("replay detected")
+	ErrFamilyNotFound  = errors.New("session not found") // family 不存在（已過期 / 已被廢）
+	ErrSessionRevoked  = errors.New("session revoked")
+	ErrUsernameTaken   = errors.New("username taken")
+	ErrWeakPassword    = errors.New("weak password")
+	ErrInvalidClient   = errors.New("invalid client")
+	ErrTooManyRequests = errors.New("too many requests")
 )
 
-// AppError 应用层错误，包含错误码和细节
+// AppError 應用層錯誤，包含錯誤碼和細節
 type AppError struct {
 	Code   string
 	Err    error
@@ -42,7 +42,7 @@ func (ae *AppError) Unwrap() error {
 	return ae.Err
 }
 
-// New 创建一个新的应用错误
+// New 建立新的應用錯誤
 func New(code string, err error, detail string) *AppError {
 	return &AppError{
 		Code:   code,
@@ -51,7 +51,7 @@ func New(code string, err error, detail string) *AppError {
 	}
 }
 
-// Is 检查错误是否为特定类型
+// Is 檢查錯誤是否為特定類型
 func Is(err error, target error) bool {
 	return errors.Is(err, target)
 }

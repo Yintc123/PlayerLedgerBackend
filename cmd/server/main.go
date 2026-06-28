@@ -9,7 +9,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/ulule/limiter/v3"
+	"go.uber.org/zap"
+
 	"github.com/yintengching/playerledger/config"
 	"github.com/yintengching/playerledger/internal/handler"
 	"github.com/yintengching/playerledger/internal/repository"
@@ -26,108 +30,171 @@ import (
 )
 
 func main() {
-	// 1. 加载配置
+	// ═══════════════════════════════════════════════════════
+	// 1. 加載 Config（§4）
+	// ═══════════════════════════════════════════════════════
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 2. 初始化日志
-	if err := logger.Init(cfg.Log.Format, cfg.Log.Level, cfg.Log.Service, cfg.App.Env); err != nil {
+	// ═══════════════════════════════════════════════════════
+	// 2. 初始化 Logger（§5.2）
+	// ═══════════════════════════════════════════════════════
+	if err := logger.Init(cfg.Log, cfg.App.Env); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to init logger: %v\n", err)
 		os.Exit(1)
 	}
-
 	log := logger.L()
-	log.Info("PlayerLedger Backend initializing")
+	log.Info("PlayerLedger Backend initializing",
+		zap.String("env", cfg.App.Env),
+		zap.Int("port", cfg.Server.Port),
+	)
 
-	// 2b. 初始化审计日志（§18.3）
-	auditLogDir := os.Getenv("AUDIT_LOG_DIR")
-	if auditLogDir == "" {
-		auditLogDir = "/var/log/playerledger"
-	}
-	if err := audit.Init(fmt.Sprintf("%s/audit.log", auditLogDir), 100, 10, 30); err != nil {
-		log.Warn(fmt.Sprintf("failed to init audit logger: %v", err))
-		// 不 fatal：audit logger 故障不应阻断应用启动
-	}
-
-	// 3. 连接数据库
+	// ═══════════════════════════════════════════════════════
+	// 3. 連接 Database（§6）
+	// ═══════════════════════════════════════════════════════
 	db, err := database.Connect(cfg.Database)
 	if err != nil {
-		log.Error(fmt.Sprintf("failed to connect database: %v", err))
-		os.Exit(1)
+		log.Fatal("failed to connect database", zap.Error(err))
 	}
-	defer database.Close(db)
+	log.Info("database connected")
 
-	// 4. 连接 Redis
+	// ═══════════════════════════════════════════════════════
+	// 4. 執行 Migrations（§13）
+	// ═══════════════════════════════════════════════════════
+	if err := database.RunMigrations(cfg.Database); err != nil {
+		log.Fatal("failed to run migrations", zap.Error(err))
+	}
+	log.Info("migrations completed")
+
+	// ═══════════════════════════════════════════════════════
+	// 5. 連接 Redis（§7）
+	// ═══════════════════════════════════════════════════════
 	redisClient, err := redis.Connect(cfg.Redis)
 	if err != nil {
-		log.Error(fmt.Sprintf("failed to connect redis: %v", err))
-		os.Exit(1)
+		log.Fatal("failed to connect redis", zap.Error(err))
 	}
-	defer redis.Close(redisClient)
+	log.Info("redis connected")
 
-	// 5. 初始化 JWT Manager 和 FamilyStore
+	// ═══════════════════════════════════════════════════════
+	// 6. 初始化 Audit Logger（§18.3）
+	// ═══════════════════════════════════════════════════════
+	auditLogger, err := audit.NewZapLogger(cfg.Log.AuditPath)
+	if err != nil {
+		log.Fatal("failed to init audit logger", zap.Error(err))
+	}
+	auditSink := "stdout"
+	if cfg.Log.AuditPath != "" {
+		auditSink = cfg.Log.AuditPath
+	}
+	log.Info("audit logger initialized", zap.String("sink", auditSink))
+
+	// ═══════════════════════════════════════════════════════
+	// 7. 初始化 JWT Manager & FamilyStore（§7.4 / §8）
+	// ═══════════════════════════════════════════════════════
 	jwtManager := jwt.NewManager(cfg.JWT)
-	familyStore, err := redis.NewFamilyStore(context.Background(), redisClient, cfg.JWT)
+	preloadCtx, preloadCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	familyStore, err := redis.NewFamilyStore(preloadCtx, redisClient, cfg.JWT)
+	preloadCancel()
 	if err != nil {
-		log.Error(fmt.Sprintf("failed to init family store: %v", err))
-		os.Exit(1)
+		log.Fatal("failed to initialize family store (lua script preload)", zap.Error(err))
 	}
+	log.Info("jwt & family store initialized")
 
-	// 6. 初始化 Metrics（§18.2）
+	// ═══════════════════════════════════════════════════════
+	// 8. 初始化 Metrics（§18.2）
+	// ═══════════════════════════════════════════════════════
 	sqlDB, err := db.DB()
-	if err == nil {
-		metrics.Init(sqlDB, os.Getenv("VERSION"), os.Getenv("COMMIT"), time.Now().Format("2006-01-02"))
-	}
-
-	// 7. 初始化 Rate Limiting Store（§15.4）
-	limiterStore, err := ratelimit.NewRedisStore(redisClient, "ratelimit")
 	if err != nil {
-		log.Warn(fmt.Sprintf("failed to init rate limiter store: %v", err))
-		// 不 fatal：rate limiting 故障应 fail-open
+		log.Warn("failed to get sql.DB for metrics", zap.Error(err))
+	} else {
+		version := os.Getenv("VERSION")
+		if version == "" {
+			version = "dev"
+		}
+		commit := os.Getenv("COMMIT")
+		if commit == "" {
+			commit = "unknown"
+		}
+		metrics.Init(sqlDB, version, commit)
+		log.Info("metrics initialized")
 	}
 
-	// 8. 初始化 Repositories 和 Services
+	// ═══════════════════════════════════════════════════════
+	// 9. 初始化 Rate Limiter Store（§15.4）
+	// ═══════════════════════════════════════════════════════
+	var limiterStore limiter.Store
+	if cfg.RateLimit.Enabled {
+		limiterStore, err = ratelimit.NewRedisStore(redisClient, "ratelimit")
+		if err != nil {
+			log.Warn("failed to init rate limiter store (will fail-open)", zap.Error(err))
+			limiterStore = nil
+		} else {
+			log.Info("rate limiter store initialized")
+		}
+	}
+
+	// ═══════════════════════════════════════════════════════
+	// 10. 初始化 Repositories、Hasher、Blacklist、AuthService
+	// ═══════════════════════════════════════════════════════
 	cmsUserRepo := repository.NewCMSUserRepository(db)
 	memberRepo := repository.NewMemberRepository(db)
 	bcryptHasher := hasher.NewBcryptHasher(cfg.JWT.BcryptCost)
 	blacklist := redis.NewAccessTokenBlacklist(redisClient)
-	authService := service.NewAuthService(cmsUserRepo, memberRepo, jwtManager, bcryptHasher, familyStore, blacklist)
+	authService := service.NewAuthService(
+		cmsUserRepo, memberRepo, jwtManager, bcryptHasher,
+		familyStore, blacklist, auditLogger,
+		cfg.JWT.AccessTTL, // 固定 access token TTL（§8.2）
+	)
+	log.Info("auth service initialized")
 
-	// 9. 设置 Gin 模式
+	// ═══════════════════════════════════════════════════════
+	// 11. 建立 Gin Router & 中介層（§9.2）
+	// 順序：RequestID → GinRecovery → GinLogger → SecureHeaders → CORS → BodyLimit → Metrics
+	// ═══════════════════════════════════════════════════════
 	gin.SetMode(cfg.Server.GinMode)
-
-	// 10. 创建路由引擎
 	router := gin.New()
 
-	// 应用中间件（按顺序 §9.2）
-	router.Use(logger.RequestID())
-	router.Use(httpx.Recovery())
-	router.Use(logger.GinLogger("/health", "/health/ready", "/metrics"))
-	router.Use(httpx.SecureHeaders(cfg.App.Env))
-	router.Use(httpx.BodyLimit(cfg.Server.MaxRequestBody))
-
-	// 设置 TrustedProxies
-	if len(cfg.Server.TrustedProxies) > 0 {
-		router.SetTrustedProxies(cfg.Server.TrustedProxies)
+	// 永遠呼叫 SetTrustedProxies；空 slice = 完全不信任 proxy header（§9.2 安全）
+	if err := router.SetTrustedProxies(cfg.Server.TrustedProxies); err != nil {
+		log.Warn("failed to set trusted proxies", zap.Error(err))
 	}
 
-	// 11. 路由注册
+	router.Use(
+		logger.RequestID(),
+		httpx.GinRecovery(),
+		logger.GinLogger("/health", "/health/ready", cfg.Metrics.Path),
+		httpx.SecureHeaders(cfg.App.Env),
+		cors.New(cors.Config{
+			AllowOrigins:     cfg.Server.AllowedOrigins,
+			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Accept-Language", "Authorization", "X-Request-ID"},
+			ExposeHeaders:    []string{"X-Request-ID", "Retry-After"},
+			AllowCredentials: cfg.Server.AllowCredentials,
+			MaxAge:           12 * time.Hour,
+		}),
+		httpx.BodyLimit(cfg.Server.MaxRequestBody),
+		metrics.GinMiddleware(),
+	)
 
-	// 健康检查（不需要 auth、不限流）
-	healthHandler := handler.NewHealthHandler(db)
-	router.GET("/health", healthHandler.GetHealth)
-	router.GET("/health/ready", healthHandler.GetReadiness)
+	// ═══════════════════════════════════════════════════════
+	// 12. 路由注冊
+	// ═══════════════════════════════════════════════════════
 
-	// Metrics（不需要 auth、不限流，由网络层隔离，§18.1）
-	router.GET("/metrics", metrics.Handler())
+	// 健康檢查（不受 auth / rate limit 保護，§11 / §11.3）
+	healthHandler := handler.NewHealthHandlerWithRedis(db, redisClient, familyStore.ScriptsLoaded)
+	router.GET("/health", healthHandler.Live)
+	router.GET("/health/ready", healthHandler.Ready)
 
-	// API endpoints（应用 IP 层限流，§15.2）
+	// Metrics（由 k8s NetworkPolicy 網路層隔離，§18.1）
+	router.GET(cfg.Metrics.Path, metrics.Handler())
+
+	// /api/v1 - IP 層限流（§15.2）
 	apiGroup := router.Group("/api/v1")
-	if limiterStore != nil {
-		apiGroup.Use(ratelimit.IPMiddleware(1*time.Minute, 100, limiterStore))
+	if limiterStore != nil && cfg.RateLimit.Enabled {
+		apiGroup.Use(ratelimit.IPMiddleware(cfg.RateLimit.IPPeriod, cfg.RateLimit.IPLimit, limiterStore))
 	}
 
 	// Auth endpoints
@@ -138,10 +205,10 @@ func main() {
 		authGroup.POST("/login", authHandler.Login)
 		authGroup.POST("/refresh", authHandler.Refresh)
 
-		// 需要 auth 的 endpoints（§8.5 含 blacklist 检查）
+		// 需要 auth 的 endpoints — AuthMiddleware + User 層限流
 		authGroupAuth := authGroup.Group("").Use(jwt.AuthMiddleware(jwtManager, blacklist))
-		if limiterStore != nil {
-			authGroupAuth.Use(ratelimit.UserMiddleware(1*time.Minute, 1000, limiterStore))
+		if limiterStore != nil && cfg.RateLimit.Enabled {
+			authGroupAuth.Use(ratelimit.UserMiddleware(cfg.RateLimit.UserPeriod, cfg.RateLimit.UserLimit, limiterStore))
 		}
 		{
 			authGroupAuth.POST("/logout", authHandler.Logout)
@@ -151,7 +218,9 @@ func main() {
 		}
 	}
 
-	// 12. 启动 HTTP 服务器
+	// ═══════════════════════════════════════════════════════
+	// 13. 啟動 HTTP Server（§14）
+	// ═══════════════════════════════════════════════════════
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:           router,
@@ -161,48 +230,43 @@ func main() {
 		IdleTimeout:       cfg.Server.IdleTimeout,
 	}
 
-	// 在 goroutine 中启动服务器
 	go func() {
-		log.Info(fmt.Sprintf("HTTP server listening on %s", srv.Addr))
+		log.Info("HTTP server listening", zap.String("addr", srv.Addr))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error(fmt.Sprintf("HTTP server error: %v", err))
+			log.Error("HTTP server error", zap.Error(err))
 		}
 	}()
 
 	log.Info("PlayerLedger Backend started")
 
-	// 等待中断信号
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
 	log.Info("Shutting down server")
 
-	// Graceful shutdown（§14.2）：HTTP → Redis → DB → Audit logger → App logger
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-	defer cancel()
+	// ═══════════════════════════════════════════════════════
+	// Graceful Shutdown 順序（§14.2）：HTTP → DB → Redis → Audit → App logger
+	// ═══════════════════════════════════════════════════════
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	defer shutCancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Error(fmt.Sprintf("Server shutdown error: %v", err))
+	if err := srv.Shutdown(shutCtx); err != nil {
+		log.Error("HTTP server shutdown error", zap.Error(err))
 	}
 
-	// 关闭 redis（在 HTTP 之后）
-	if err := redis.Close(redisClient); err != nil {
-		log.Error(fmt.Sprintf("Redis close error: %v", err))
-	}
-
-	// 关闭数据库
 	if err := database.Close(db); err != nil {
-		log.Error(fmt.Sprintf("Database close error: %v", err))
+		log.Error("database close error", zap.Error(err))
 	}
 
-	// Sync audit logger（安全相关日志优先级最高，§14.2）
-	if err := audit.Sync(); err != nil {
+	if err := redis.Close(redisClient); err != nil {
+		log.Error("redis close error", zap.Error(err))
+	}
+
+	if err := auditLogger.Sync(); err != nil {
 		fmt.Fprintf(os.Stderr, "audit logger sync error: %v\n", err)
 	}
 
-	// 同步应用日志
-	logger.Sync()
-
+	logger.Sync() //nolint:errcheck
 	log.Info("Server stopped")
 }

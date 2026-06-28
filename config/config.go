@@ -169,8 +169,10 @@ func Load() (*Config, error) {
 	}
 
 	// 4. 环境变量（最高优先级）
+	// 注意：AutomaticEnv() 对 Unmarshal 不生效（Viper 已知限制），需显式 BindEnv（§4.3）
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	v.AutomaticEnv()
+	bindEnvVars(v)
 
 	// 5. Unmarshal + 验证
 	var cfg Config
@@ -237,4 +239,39 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("LOG_LEVEL", "info")
 	v.SetDefault("LOG_FORMAT", "json")
 	v.SetDefault("METRICS_PATH", "/metrics")
+}
+
+// bindEnvVars 顯式綁定所有 env var 到 Viper key（§4.3）。
+// 必要原因：Viper 的 AutomaticEnv() 在 Unmarshal() 時不自動讀取 env，
+// 只有顯式 BindEnv 才能確保 unmarshal 時能讀到 env 的值。
+func bindEnvVars(v *viper.Viper) {
+	keys := []string{
+		// App
+		"APP_ENV",
+		// Server
+		"PORT", "GIN_MODE", "ALLOWED_ORIGINS", "ALLOW_CREDENTIALS",
+		"TRUSTED_PROXIES", "SHUTDOWN_TIMEOUT", "READ_HEADER_TIMEOUT",
+		"READ_TIMEOUT", "WRITE_TIMEOUT", "IDLE_TIMEOUT", "MAX_REQUEST_BODY",
+		// Database
+		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME",
+		"DB_SSLMODE", "DB_MAX_OPEN_CONNS", "DB_MAX_IDLE_CONNS",
+		"DB_CONN_MAX_LIFETIME", "DB_CONNECT_TIMEOUT", "DB_STATEMENT_TIMEOUT", "DB_PREPARE_STMT",
+		// Redis
+		"REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "REDIS_DB",
+		"REDIS_DIAL_TIMEOUT", "REDIS_READ_TIMEOUT", "REDIS_WRITE_TIMEOUT", "REDIS_POOL_SIZE",
+		// JWT
+		"JWT_ISSUER", "JWT_SECRET", "JWT_SECRET_PREVIOUS",
+		"JWT_REFRESH_SECRET", "JWT_REFRESH_SECRET_PREVIOUS",
+		"JWT_ACCESS_TTL", "JWT_GRACE_WINDOW", "JWT_CLOCK_SKEW_LEEWAY", "BCRYPT_COST",
+		// Log
+		"LOG_LEVEL", "LOG_FORMAT", "LOG_SERVICE", "LOG_AUDIT_PATH",
+		// Rate Limit
+		"RATE_LIMIT_ENABLED", "RATE_LIMIT_IP_PERIOD", "RATE_LIMIT_IP_MAX",
+		"RATE_LIMIT_USER_PERIOD", "RATE_LIMIT_USER_MAX",
+		// Metrics
+		"METRICS_ENABLED", "METRICS_PATH",
+	}
+	for _, key := range keys {
+		v.BindEnv(key) //nolint:errcheck
+	}
 }

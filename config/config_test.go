@@ -20,7 +20,7 @@ func TestLoad_WithEnvVars(t *testing.T) {
 	t.Setenv("DB_NAME", "playerledger")
 	t.Setenv("REDIS_HOST", "localhost")
 	t.Setenv("JWT_SECRET", "super-secret-key-32-bytes-long!!")
-	t.Setenv("JWT_REFRESH_SECRET", "super-secret-key-32-bytes-long!!")
+	t.Setenv("JWT_REFRESH_SECRET", "refresh-secret-key-32-bytes-long!!")
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -43,7 +43,7 @@ func TestLoad_ValidateAllowCredentialsWithWildcardOrigin(t *testing.T) {
 	t.Setenv("DB_NAME", "playerledger")
 	t.Setenv("REDIS_HOST", "localhost")
 	t.Setenv("JWT_SECRET", "super-secret-key-32-bytes-long!!")
-	t.Setenv("JWT_REFRESH_SECRET", "super-secret-key-32-bytes-long!!")
+	t.Setenv("JWT_REFRESH_SECRET", "refresh-secret-key-32-bytes-long!!")
 
 	_, err := Load()
 	require.Error(t, err)
@@ -62,7 +62,7 @@ func TestLoad_ProdRequiresReleaseMode(t *testing.T) {
 	t.Setenv("DB_SSLMODE", "require")
 	t.Setenv("REDIS_HOST", "localhost")
 	t.Setenv("JWT_SECRET", "super-secret-key-32-bytes-long!!")
-	t.Setenv("JWT_REFRESH_SECRET", "super-secret-key-32-bytes-long!!")
+	t.Setenv("JWT_REFRESH_SECRET", "refresh-secret-key-32-bytes-long!!")
 
 	_, err := Load()
 	require.Error(t, err)
@@ -81,7 +81,7 @@ func TestLoad_ProdRequiresSSLMode(t *testing.T) {
 	t.Setenv("DB_SSLMODE", "disable")
 	t.Setenv("REDIS_HOST", "localhost")
 	t.Setenv("JWT_SECRET", "super-secret-key-32-bytes-long!!")
-	t.Setenv("JWT_REFRESH_SECRET", "super-secret-key-32-bytes-long!!")
+	t.Setenv("JWT_REFRESH_SECRET", "refresh-secret-key-32-bytes-long!!")
 
 	_, err := Load()
 	require.Error(t, err)
@@ -99,7 +99,7 @@ func TestLoad_RateLimitValidation(t *testing.T) {
 	t.Setenv("DB_NAME", "playerledger")
 	t.Setenv("REDIS_HOST", "localhost")
 	t.Setenv("JWT_SECRET", "super-secret-key-32-bytes-long!!")
-	t.Setenv("JWT_REFRESH_SECRET", "super-secret-key-32-bytes-long!!")
+	t.Setenv("JWT_REFRESH_SECRET", "refresh-secret-key-32-bytes-long!!")
 	t.Setenv("RATE_LIMIT_ENABLED", "true")
 	t.Setenv("RATE_LIMIT_IP_PERIOD", "1s")
 	// 缺少 RATE_LIMIT_IP_MAX
@@ -120,7 +120,7 @@ func TestLoad_DefaultValues(t *testing.T) {
 	t.Setenv("DB_NAME", "playerledger")
 	t.Setenv("REDIS_HOST", "localhost")
 	t.Setenv("JWT_SECRET", "super-secret-key-32-bytes-long!!")
-	t.Setenv("JWT_REFRESH_SECRET", "super-secret-key-32-bytes-long!!")
+	t.Setenv("JWT_REFRESH_SECRET", "refresh-secret-key-32-bytes-long!!")
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -146,7 +146,7 @@ func TestLoad_ClientPoliciesDefaults(t *testing.T) {
 	t.Setenv("DB_NAME", "playerledger")
 	t.Setenv("REDIS_HOST", "localhost")
 	t.Setenv("JWT_SECRET", "super-secret-key-32-bytes-long!!")
-	t.Setenv("JWT_REFRESH_SECRET", "super-secret-key-32-bytes-long!!")
+	t.Setenv("JWT_REFRESH_SECRET", "refresh-secret-key-32-bytes-long!!")
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -171,7 +171,7 @@ func TestLoad_MissingRequiredField(t *testing.T) {
 	t.Setenv("DB_NAME", "playerledger")
 	t.Setenv("REDIS_HOST", "localhost")
 	t.Setenv("JWT_SECRET", "super-secret-key-32-bytes-long!!")
-	t.Setenv("JWT_REFRESH_SECRET", "super-secret-key-32-bytes-long!!")
+	t.Setenv("JWT_REFRESH_SECRET", "refresh-secret-key-32-bytes-long!!")
 
 	_, err := Load()
 	require.Error(t, err)
@@ -189,7 +189,7 @@ func TestConfig_Validate_WeakJWTSecret(t *testing.T) {
 	t.Setenv("DB_NAME", "playerledger")
 	t.Setenv("REDIS_HOST", "localhost")
 	t.Setenv("JWT_SECRET", "short")
-	t.Setenv("JWT_REFRESH_SECRET", "super-secret-key-32-bytes-long!!")
+	t.Setenv("JWT_REFRESH_SECRET", "refresh-secret-key-32-bytes-long!!")
 
 	_, err := Load()
 	require.Error(t, err)

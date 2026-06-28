@@ -16,7 +16,7 @@ import (
 // TestRunMigrations_RequiresValidDatabase 验证 RunMigrations 需要有效的数据库连接
 func TestRunMigrations_RequiresValidDatabase(t *testing.T) {
 	// 初始化日志
-	err := logger.Init("json", "info", "test", "dev")
+	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
 	require.NoError(t, err)
 
 	cfg := config.DatabaseConfig{
@@ -108,7 +108,7 @@ func TestRunMigrations_WithValidDatabase(t *testing.T) {
 	}
 
 	// 初始化日志
-	err := logger.Init("json", "info", "test", "dev")
+	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
 	require.NoError(t, err)
 
 	cfg := config.DatabaseConfig{

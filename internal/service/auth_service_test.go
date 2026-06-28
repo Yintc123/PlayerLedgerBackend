@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/yintengching/playerledger/config"
 	"github.com/yintengching/playerledger/internal/apperr"
 	"github.com/yintengching/playerledger/internal/model"
+	"github.com/yintengching/playerledger/pkg/audit"
 	"github.com/yintengching/playerledger/pkg/auth/hasher"
 	"github.com/yintengching/playerledger/pkg/jwt"
 	"github.com/yintengching/playerledger/pkg/redis"
@@ -91,11 +91,11 @@ func (h *fakeHasher) Hash(plain string) (string, error) {
 	return plain, nil
 }
 
-func (h *fakeHasher) Compare(hash, plain string) (bool, error) {
+func (h *fakeHasher) Compare(hash, plain string) error {
 	if hash != plain {
-		return false, hasher.ErrMismatch
+		return hasher.ErrMismatch
 	}
-	return true, nil
+	return nil
 }
 
 type fakeBcryptHasher struct {
@@ -111,15 +111,12 @@ func (h *fakeBcryptHasher) Hash(plain string) (string, error) {
 	return string(bytes), err
 }
 
-func (h *fakeBcryptHasher) Compare(hash, plain string) (bool, error) {
+func (h *fakeBcryptHasher) Compare(hash, plain string) error {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(plain))
-	if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
-		return false, hasher.ErrMismatch
+	if err == bcrypt.ErrMismatchedHashAndPassword {
+		return hasher.ErrMismatch
 	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return err
 }
 
 type fakeJWTManager struct {
@@ -270,7 +267,7 @@ func TestAuthService_Register_Success(t *testing.T) {
 	familyStore := newFakeFamilyStore()
 	blacklist := newFakeAccessTokenBlacklist()
 
-	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist)
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
 
 	in := RegisterInput{
 		Username: "testuser",
@@ -298,7 +295,7 @@ func TestAuthService_Register_WeakPassword(t *testing.T) {
 	familyStore := newFakeFamilyStore()
 	blacklist := newFakeAccessTokenBlacklist()
 
-	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist)
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
 
 	tests := []struct {
 		name     string
@@ -333,7 +330,7 @@ func TestAuthService_Register_InvalidClient(t *testing.T) {
 	familyStore := newFakeFamilyStore()
 	blacklist := newFakeAccessTokenBlacklist()
 
-	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist)
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
 
 	in := RegisterInput{
 		Username: "testuser",
@@ -355,7 +352,7 @@ func TestAuthService_Register_UsernameTaken(t *testing.T) {
 	familyStore := newFakeFamilyStore()
 	blacklist := newFakeAccessTokenBlacklist()
 
-	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist)
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
 
 	// 先注册一个用户
 	in1 := RegisterInput{
@@ -372,7 +369,7 @@ func TestAuthService_Register_UsernameTaken(t *testing.T) {
 		ClientID: "cms-web",
 	}
 	err := svc.Register(ctx, in2)
-	assert.Equal(t, apperr.ErrConflict, err)
+	assert.Equal(t, apperr.ErrUsernameTaken, err)
 }
 
 // TestAuthService_Login_Success 登入成功（§8.9）
@@ -385,7 +382,7 @@ func TestAuthService_Login_Success(t *testing.T) {
 	familyStore := newFakeFamilyStore()
 	blacklist := newFakeAccessTokenBlacklist()
 
-	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist)
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
 
 	// 先注册用户
 	hash, _ := h.Hash("password123")
@@ -411,7 +408,7 @@ func TestAuthService_Login_Success(t *testing.T) {
 	assert.Equal(t, "Bearer", pair.TokenType)
 	assert.NotEmpty(t, pair.AccessToken)
 	assert.NotEmpty(t, pair.RefreshToken)
-	assert.Equal(t, 3600, pair.ExpiresIn) // 1 hour = 3600 seconds
+	assert.Equal(t, 900, pair.ExpiresIn)  // access TTL = 15m = 900s（§8.2 固定 AccessTTL）
 	assert.Equal(t, 3600, pair.RefreshExpiresIn)
 
 	// 验证 family 已保存
@@ -429,7 +426,7 @@ func TestAuthService_Login_InvalidCredentials(t *testing.T) {
 	familyStore := newFakeFamilyStore()
 	blacklist := newFakeAccessTokenBlacklist()
 
-	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist)
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
 
 	// 先注册用户
 	hash, _ := h.Hash("password123")
@@ -464,7 +461,7 @@ func TestAuthService_ListSessions_WithCurrent(t *testing.T) {
 	familyStore := newFakeFamilyStore()
 	blacklist := newFakeAccessTokenBlacklist()
 
-	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist)
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
 
 	userID := uuid.New().String()
 	currentFID := uuid.New().String()
@@ -526,7 +523,7 @@ func TestAuthService_RevokeSession_CannotRevokeCurrent(t *testing.T) {
 	familyStore := newFakeFamilyStore()
 	blacklist := newFakeAccessTokenBlacklist()
 
-	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist)
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
 
 	userID := uuid.New().String()
 	currentFID := uuid.New().String()
@@ -547,7 +544,7 @@ func TestAuthService_RevokeAll_BlacklistAccessJTI(t *testing.T) {
 	familyStore := newFakeFamilyStore()
 	blacklist := newFakeAccessTokenBlacklist()
 
-	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist)
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
 
 	userID := uuid.New().String()
 	accessJTI := uuid.New().String()

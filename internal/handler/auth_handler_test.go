@@ -16,6 +16,7 @@ import (
 	"github.com/yintengching/playerledger/internal/apperr"
 	"github.com/yintengching/playerledger/internal/model"
 	"github.com/yintengching/playerledger/internal/service"
+	"github.com/yintengching/playerledger/pkg/audit"
 	"github.com/yintengching/playerledger/pkg/auth/hasher"
 	"github.com/yintengching/playerledger/pkg/jwt"
 	"github.com/yintengching/playerledger/pkg/logger"
@@ -205,7 +206,7 @@ func (bl *FakeBlacklist) IsBlacklisted(ctx context.Context, jti string) (bool, e
 
 func setupTestRouter(t *testing.T) (*gin.Engine, *AuthHandler) {
 	gin.SetMode(gin.TestMode)
-	logger.Init("console", "debug", "test", "dev")
+	logger.Init(config.LogConfig{Format: "console", Level: "debug", Service: "test"}, "dev") //nolint:errcheck
 
 	cmsUserRepo := NewFakeCMSUserRepository()
 	memberRepo := NewFakeMemberRepository()
@@ -214,7 +215,7 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *AuthHandler) {
 	familyStore := NewFakeFamilyStore()
 	blacklist := NewFakeBlacklist()
 
-	authSvc := service.NewAuthService(cmsUserRepo, memberRepo, jwtManager, hasherImpl, familyStore, blacklist)
+	authSvc := service.NewAuthService(cmsUserRepo, memberRepo, jwtManager, hasherImpl, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
 	handler := NewAuthHandler(authSvc)
 
 	router := gin.New()
@@ -286,7 +287,7 @@ func TestAuthHandler_Register_WeakPassword(t *testing.T) {
 
 	body := map[string]string{
 		"username":  "testuser",
-		"password":  "short",
+		"password":  "onlyletters",  // ≥8 字符但無數字 → 服務層弱密碼檢查 → 422
 		"client_id": "cms-web",
 	}
 	bodyBytes, _ := json.Marshal(body)
@@ -358,7 +359,7 @@ func TestAuthHandler_Register_InvalidInput(t *testing.T) {
 
 	var resp map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	assert.Equal(t, "invalid_input", resp["error"])
+	assert.Equal(t, "invalid input", resp["error"])
 }
 
 // TestAuthHandler_Login_Success_CMSUser — POST /auth/login CMS user 成功登入

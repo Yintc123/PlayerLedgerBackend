@@ -1,63 +1,51 @@
 package handler
 
-// Response 统一的成功响应格式
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/yintengching/playerledger/pkg/logger"
+)
+
+// Response 統一成功回應格式（§10 / §3.5.1 SuccessEnvelope）。
+// Data 無 omitempty — 空 slice 序列化為 [] 而非消失。
 type Response[T any] struct {
-	Success   bool        `json:"success"`
-	RequestID string      `json:"request_id"`
-	Data      T           `json:"data,omitempty"`
-	Meta      *PageMeta   `json:"meta,omitempty"`
+	Success   bool      `json:"success"`
+	RequestID string    `json:"request_id"`
+	Data      T         `json:"data"`
+	Meta      *PageMeta `json:"meta,omitempty"`
 }
 
-// ErrorResponse 统一的错误响应格式
-type ErrorResponse struct {
-	Success   bool         `json:"success"`
-	RequestID string       `json:"request_id"`
-	Error     string       `json:"error"`
-	Details   []FieldError `json:"details,omitempty"`
-}
-
-// PageMeta 分页元数据
+// PageMeta 分頁元資料（§10.2 / §3.5.1 PageMeta schema）
 type PageMeta struct {
 	Page     int   `json:"page"`
 	PageSize int   `json:"page_size"`
 	Total    int64 `json:"total"`
 }
 
-// FieldError 字段验证错误
+// FieldError 欄位驗證錯誤（§3.5.1 FieldError schema）
 type FieldError struct {
 	Field   string `json:"field"`
 	Message string `json:"message"`
 }
 
-// OK 创建成功响应
-func OK[T any](requestID string, data T) *Response[T] {
-	return &Response[T]{
+// OK 建立成功回應（§10）。
+func OK[T any](c *gin.Context, data T) Response[T] {
+	return Response[T]{
 		Success:   true,
-		RequestID: requestID,
+		RequestID: logger.GetRequestID(c),
 		Data:      data,
 	}
 }
 
-// OKList 创建列表响应
-func OKList[T any](requestID string, data []T, page int, pageSize int, total int64) *Response[[]T] {
-	return &Response[[]T]{
+// OKList 建立列表回應（§10）。
+func OKList[T any](c *gin.Context, data []T, page int, pageSize int, total int64) Response[[]T] {
+	return Response[[]T]{
 		Success:   true,
-		RequestID: requestID,
+		RequestID: logger.GetRequestID(c),
 		Data:      data,
 		Meta: &PageMeta{
 			Page:     page,
 			PageSize: pageSize,
 			Total:    total,
 		},
-	}
-}
-
-// ErrorResp 创建错误响应
-func ErrorResp(requestID string, code string, details ...FieldError) *ErrorResponse {
-	return &ErrorResponse{
-		Success:   false,
-		RequestID: requestID,
-		Error:     code,
-		Details:   details,
 	}
 }

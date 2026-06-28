@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -143,69 +144,46 @@ func (m *manager) SignRefresh(ctx context.Context, p SignRefreshParams) (string,
 //   3. aud 必須 ∈ 已知 client_id 白名單
 //   4. 時間 claim 含 leeway
 func (m *manager) VerifyAccess(ctx context.Context, tokenString string) (*AccessClaims, error) {
-	// 步驟 0：嘗試用主 secret 驗證
-	token, err := jwt.ParseWithClaims(tokenString, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) {
-		// Alg 鎖定 HS256
-		hmacMethod, ok := t.Method.(*jwt.SigningMethodHMAC)
-		if !ok || t.Method.Alg() != "HS256" {
-			return nil, fmt.Errorf("invalid algorithm: expected HS256, got %s", t.Method.Alg())
-		}
-		_ = hmacMethod // 避免 linter 警告
-		return []byte(m.cfg.Secret), nil
-	})
-
-	// 如果失敗且有 PreviousSecret，嘗試用舊 secret
-	if err != nil && m.cfg.PreviousSecret != "" {
-		token, err = jwt.ParseWithClaims(tokenString, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) {
-			if t.Method.Alg() != "HS256" {
-				return nil, fmt.Errorf("invalid algorithm: %s", t.Method.Alg())
+	keyFn := func(secret string) jwt.Keyfunc {
+		return func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok || t.Method.Alg() != "HS256" {
+				return nil, fmt.Errorf("invalid algorithm: expected HS256, got %s", t.Method.Alg())
 			}
-			return []byte(m.cfg.PreviousSecret), nil
-		})
+			return []byte(secret), nil
+		}
+	}
+
+	// 以 leeway 解析（§8.3 ClockSkewLeeway）
+	parser := jwt.NewParser(jwt.WithLeeway(m.cfg.ClockSkewLeeway))
+
+	token, err := parser.ParseWithClaims(tokenString, &AccessClaims{}, keyFn(m.cfg.Secret))
+
+	// 若失敗且有 PreviousSecret，嘗試舊 secret（§8.3 secret rotation）
+	if err != nil && m.cfg.PreviousSecret != "" {
+		token, err = parser.ParseWithClaims(tokenString, &AccessClaims{}, keyFn(m.cfg.PreviousSecret))
 	}
 
 	if err != nil {
+		// 區分「過期」與「其他錯誤」（§8.3）
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return nil, apperr.ErrTokenExpired
+		}
 		return nil, apperr.ErrInvalidToken
 	}
 
 	claims, ok := token.Claims.(*AccessClaims)
-	if !ok {
+	if !ok || !token.Valid {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// 步驟 2：iss 檢查
+	// iss 檢查（§8.3 步驟 2）
 	if claims.Issuer != m.cfg.Issuer {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// 步驟 3：aud 檢查
+	// aud 白名單檢查（§8.3 步驟 3）
 	if len(claims.Audience) == 0 || !m.clientIDWhitelist[claims.Audience[0]] {
 		return nil, apperr.ErrInvalidToken
-	}
-
-	// 步驟 4：時間檢查含 leeway
-	now := time.Now()
-	if claims.ExpiresAt != nil {
-		expTime := claims.ExpiresAt.Time
-		if now.After(expTime.Add(m.cfg.ClockSkewLeeway)) {
-			return nil, apperr.ErrTokenExpired
-		}
-	}
-
-	// 檢查 NotBefore（不應在未來）
-	if claims.NotBefore != nil {
-		nbfTime := claims.NotBefore.Time
-		if now.Add(-m.cfg.ClockSkewLeeway).Before(nbfTime) {
-			return nil, apperr.ErrInvalidToken
-		}
-	}
-
-	// 檢查 IssuedAt（不應在未來）
-	if claims.IssuedAt != nil {
-		iatTime := claims.IssuedAt.Time
-		if now.Add(-m.cfg.ClockSkewLeeway).Before(iatTime) {
-			return nil, apperr.ErrInvalidToken
-		}
 	}
 
 	return claims, nil
@@ -217,72 +195,49 @@ func (m *manager) VerifyAccess(ctx context.Context, tokenString string) (*Access
 //   4. 時間 claim 含 leeway
 //   5. abs_exp 額外檢查：abs_exp + leeway > now，否則 ErrAbsoluteExpired
 func (m *manager) VerifyRefresh(ctx context.Context, tokenString string) (*RefreshClaims, error) {
-	// 步驟 0：嘗試用主 secret 驗證
-	token, err := jwt.ParseWithClaims(tokenString, &RefreshClaims{}, func(t *jwt.Token) (interface{}, error) {
-		// Alg 鎖定 HS256
-		hmacMethod, ok := t.Method.(*jwt.SigningMethodHMAC)
-		if !ok || t.Method.Alg() != "HS256" {
-			return nil, fmt.Errorf("invalid algorithm: expected HS256, got %s", t.Method.Alg())
-		}
-		_ = hmacMethod
-		return []byte(m.cfg.RefreshSecret), nil
-	})
-
-	// 如果失敗且有 PreviousRefreshSecret，嘗試用舊 secret
-	if err != nil && m.cfg.PreviousRefreshSecret != "" {
-		token, err = jwt.ParseWithClaims(tokenString, &RefreshClaims{}, func(t *jwt.Token) (interface{}, error) {
-			if t.Method.Alg() != "HS256" {
-				return nil, fmt.Errorf("invalid algorithm: %s", t.Method.Alg())
+	keyFn := func(secret string) jwt.Keyfunc {
+		return func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok || t.Method.Alg() != "HS256" {
+				return nil, fmt.Errorf("invalid algorithm: expected HS256, got %s", t.Method.Alg())
 			}
-			return []byte(m.cfg.PreviousRefreshSecret), nil
-		})
+			return []byte(secret), nil
+		}
+	}
+
+	// 以 leeway 解析（§8.3 ClockSkewLeeway）
+	parser := jwt.NewParser(jwt.WithLeeway(m.cfg.ClockSkewLeeway))
+
+	token, err := parser.ParseWithClaims(tokenString, &RefreshClaims{}, keyFn(m.cfg.RefreshSecret))
+
+	// 若失敗且有 PreviousRefreshSecret，嘗試舊 secret（§8.3 secret rotation）
+	if err != nil && m.cfg.PreviousRefreshSecret != "" {
+		token, err = parser.ParseWithClaims(tokenString, &RefreshClaims{}, keyFn(m.cfg.PreviousRefreshSecret))
 	}
 
 	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return nil, apperr.ErrTokenExpired
+		}
 		return nil, apperr.ErrInvalidToken
 	}
 
 	claims, ok := token.Claims.(*RefreshClaims)
-	if !ok {
+	if !ok || !token.Valid {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// 步驟 2：iss 檢查
+	// iss 檢查（§8.3 步驟 2）
 	if claims.Issuer != m.cfg.Issuer {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// 步驟 3：aud 檢查
+	// aud 白名單檢查（§8.3 步驟 3）
 	if len(claims.Audience) == 0 || !m.clientIDWhitelist[claims.Audience[0]] {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// 步驟 4：時間檢查含 leeway
+	// 步驟 5：abs_exp 額外檢查（§8.3）— 含 leeway，abs_exp 由 server state 管控
 	now := time.Now()
-	if claims.ExpiresAt != nil {
-		expTime := claims.ExpiresAt.Time
-		if now.After(expTime.Add(m.cfg.ClockSkewLeeway)) {
-			return nil, apperr.ErrTokenExpired
-		}
-	}
-
-	// 檢查 NotBefore
-	if claims.NotBefore != nil {
-		nbfTime := claims.NotBefore.Time
-		if now.Add(-m.cfg.ClockSkewLeeway).Before(nbfTime) {
-			return nil, apperr.ErrInvalidToken
-		}
-	}
-
-	// 檢查 IssuedAt
-	if claims.IssuedAt != nil {
-		iatTime := claims.IssuedAt.Time
-		if now.Add(-m.cfg.ClockSkewLeeway).Before(iatTime) {
-			return nil, apperr.ErrInvalidToken
-		}
-	}
-
-	// 步驟 5：abs_exp 檢查（含 leeway）
 	absExpTime := time.Unix(claims.AbsoluteExp, 0)
 	if now.After(absExpTime.Add(m.cfg.ClockSkewLeeway)) {
 		return nil, apperr.ErrAbsoluteExpired

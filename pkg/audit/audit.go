@@ -1,87 +1,145 @@
 package audit
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"github.com/yintengching/playerledger/pkg/ctxkey"
 )
 
-var auditLogger *zap.Logger
+// EventType 安全事件類型（§18.3.2）
+type EventType string
 
-// Init 初始化审计日志（独立于应用 logger，§18.3）
-// logPath: 审计日志文件路径（如 /var/log/app/audit.log）
-// maxSizeMB: 单个文件最大大小（MB），超过后轮转
-// maxBackups: 保留最多备份数
-// maxAgeDays: 保留最多天数
-func Init(logPath string, maxSizeMB int, maxBackups, maxAgeDays int) error {
-	if logPath == "" {
-		logPath = "/var/log/playerledger/audit.log"
-	}
+const (
+	EventRegisterSuccess EventType = "auth.register_success"
+	EventRegisterFailed  EventType = "auth.register_failed"
+	EventLoginSuccess    EventType = "auth.login_success"
+	EventLoginFailed     EventType = "auth.login_failed"
+	EventTokenRotated    EventType = "auth.token_rotated"
+	EventReplayDetected  EventType = "auth.replay_detected" // ⚠️ 觸發告警
+	EventLogout          EventType = "auth.logout"
+	EventSessionRevoked  EventType = "auth.session_revoked"
+	EventRevokeAll       EventType = "auth.revoke_all"
+)
 
-	// 创建目录
-	dir := os.Getenv("AUDIT_LOG_DIR")
-	if dir == "" {
-		dir = "/var/log/playerledger"
-	}
-	os.MkdirAll(dir, 0o755)
+// AuthEvent 安全事件的結構化內容（§18.3.2）。
+// Extra 給事件特有欄位用，例如 replay_detected 帶 {presented_jti, current_jti, delta_sec}。
+type AuthEvent struct {
+	Type      EventType
+	UserID    string         // actor；未登入事件（如 login_failed）可空
+	FamilyID  string         // 事件涉及的 family（若有）
+	ClientID  string
+	IP        string
+	UserAgent string
+	Extra     map[string]any
+}
 
-	// JSON encoder 配置
-	config := zap.NewProductionEncoderConfig()
-	config.TimeKey = "timestamp"
-	config.EncodeTime = zapcore.EpochTimeEncoder
+// Logger audit logger 唯一介面（§18.3.2）。
+// Log 不回傳 error：caller 寫 audit 後即視為「已記錄」，不該被 audit sink 寫失敗拖累業務邏輯。
+// 實作必須內部 fallback — 主 sink 寫失敗時自動寫 os.Stderr，永不吞錯。
+type Logger interface {
+	Log(ctx context.Context, event AuthEvent)
+	Sync() error
+}
 
-	encoder := zapcore.NewJSONEncoder(config)
+// fallbackSyncer 在主 sink 寫失敗時自動 fallback 至次 sink（§18.3.1 永不吞錯）。
+// 正常情況只寫主 sink，不雙重寫入。
+type fallbackSyncer struct {
+	primary  zapcore.WriteSyncer
+	fallback zapcore.WriteSyncer
+}
 
-	// File sink（使用 zapcore.AddSync 避免对 zap.SugaredLogger 的依赖）
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+func (f *fallbackSyncer) Write(bs []byte) (int, error) {
+	n, err := f.primary.Write(bs)
 	if err != nil {
-		return fmt.Errorf("open audit log file: %w", err)
+		_, _ = f.fallback.Write(bs) // best-effort fallback
 	}
-
-	// 简单实现（未集成 lumberjack，生产需补齐）
-	sink := zapcore.AddSync(file)
-	core := zapcore.NewCore(encoder, sink, zapcore.InfoLevel)
-	auditLogger = zap.New(core, zap.AddCaller())
-
-	return nil
+	return n, err
 }
 
-// L 获取审计 logger
-func L() *zap.Logger {
-	if auditLogger == nil {
-		// 未初始化时返回 noop logger，避免 panic
-		return zap.NewNop()
+func (f *fallbackSyncer) Sync() error {
+	err := f.primary.Sync()
+	if err != nil {
+		_ = f.fallback.Sync()
 	}
-	return auditLogger
+	return err
 }
 
-// Log 记录审计事件
-func Log(event *AuditEvent) {
-	if auditLogger == nil {
-		return
+// zapAuditLogger 以獨立 zap instance 實作 Logger（§18.3.3）。
+type zapAuditLogger struct {
+	z *zap.Logger
+}
+
+// NewZapLogger 建立獨立 audit logger（§18.3.3）。
+//   - path == ""  → 共用 stdout（本機開發預設）
+//   - path != ""  → 寫該檔案；主 sink 寫失敗 fallback stderr（§18.3.1）
+//     開檔失敗 → 回 error；caller（main）必須 fatal 退出，禁止 fallback 至 stdout。
+func NewZapLogger(path string) (Logger, error) {
+	core, err := newAuditCore(path)
+	if err != nil {
+		return nil, fmt.Errorf("audit core: %w", err)
 	}
-	auditLogger.Info("",
-		zap.String("event_type", string(event.EventType)),
-		zap.Int64("timestamp", event.Timestamp),
-		zap.String("user_id", event.UserID),
-		zap.String("username", event.Username),
-		zap.String("user_type", event.UserType),
-		zap.String("client_id", event.ClientID),
-		zap.String("family_id", event.FamilyID),
-		zap.String("ip_address", event.IPAddress),
-		zap.String("result", event.Result),
-		zap.Any("details", event.Details),
-		zap.String("request_id", event.RequestID),
+	return &zapAuditLogger{z: zap.New(core)}, nil
+}
+
+// newAuditCore 建立固定 JSON encoder + InfoLevel 的 zap core。
+func newAuditCore(path string) (zapcore.Core, error) {
+	enc := zapcore.NewJSONEncoder(zapcore.EncoderConfig{
+		TimeKey:        "timestamp",
+		MessageKey:     "message",
+		LevelKey:       "", // 不輸出 level（audit 永遠 Info）
+		EncodeTime:     zapcore.RFC3339NanoTimeEncoder,
+		EncodeDuration: zapcore.StringDurationEncoder,
+	})
+
+	var sink zapcore.WriteSyncer
+	if path == "" {
+		sink = zapcore.AddSync(os.Stdout)
+	} else {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+		if err != nil {
+			return nil, fmt.Errorf("open audit log file %q: %w", path, err)
+		}
+		// 主 sink（file）失敗時 fallback 至 stderr（§18.3.1），正常情況不雙重輸出
+		sink = &fallbackSyncer{
+			primary:  zapcore.AddSync(f),
+			fallback: zapcore.AddSync(os.Stderr),
+		}
+	}
+
+	return zapcore.NewCore(enc, sink, zapcore.InfoLevel), nil
+}
+
+// Log 寫入單筆 audit event（§18.3.3）。
+func (l *zapAuditLogger) Log(ctx context.Context, e AuthEvent) {
+	l.z.Info(string(e.Type),
+		zap.String("event_type", string(e.Type)),
+		zap.String("timestamp", time.Now().UTC().Format(time.RFC3339)),
+		zap.String("request_id", ctxkey.RequestID(ctx)),
+		zap.String("user_id", e.UserID),
+		zap.String("fid", e.FamilyID),
+		zap.String("client_id", e.ClientID),
+		zap.String("ip", e.IP),
+		zap.String("user_agent", e.UserAgent),
+		zap.Any("extra", e.Extra),
 	)
 }
 
-// Sync 同步审计日志缓冲（graceful shutdown 时调用，§14.2）
-// 失败时写 stderr，避免依赖正要关闭的 app logger
-func Sync() error {
-	if auditLogger == nil {
-		return nil
-	}
-	return auditLogger.Sync()
+// Sync flush 內部 buffer（§18.3.3）。graceful shutdown 必呼叫，且早於 app logger Sync。
+func (l *zapAuditLogger) Sync() error {
+	return l.z.Sync()
 }
+
+// nopLogger 不寫任何東西的 Logger，用於測試或審計初始化失敗時的安全降級。
+type nopLogger struct{}
+
+// NewNopLogger 回傳不做任何事的 Logger。
+func NewNopLogger() Logger { return &nopLogger{} }
+
+func (n *nopLogger) Log(_ context.Context, _ AuthEvent) {}
+func (n *nopLogger) Sync() error                         { return nil }
