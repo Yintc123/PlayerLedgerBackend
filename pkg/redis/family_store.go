@@ -2,14 +2,19 @@ package redis
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/yintengching/playerledger/config"
 )
+
+//go:embed scripts/*.lua
+var scriptsFS embed.FS
 
 // RotateResult — Rotate Lua script 的返回结果
 type RotateResult int
@@ -23,54 +28,148 @@ const (
 
 // FamilyState 完整描述一个 login session 的 server 端状态。
 // 序列化为 JSON 后存入 auth:family:{userID}:<fid>。
+//
+// AbsoluteExp 是 server 信任的 abs_exp 来源：rotation / grace 重签 refresh token
+// 时必须从这里取，不能信任 client presented JWT，避免攻击者改 token 内容延长 session。
+// Lua 也用此值计算 Redis key TTL，无需 caller 额外传入。
+//
+// UserType / Role 在 login 时随 family 一起写入，rotation 与 GraceHit 重签
+// access token 时直接读 state，不必再打 DB（hot path 维持 stateless）。
 type FamilyState struct {
 	UserID                string `json:"user_id"`
 	FamilyID              string `json:"fid"`
-	ClientID              string `json:"client_id"`
-	UserType              string `json:"utype"`
-	Role                  string `json:"role"`
+	ClientID              string `json:"client_id"`               // = aud claim
+	UserType              string `json:"utype"`                   // login 时固化；GraceHit / Rotated 重签 access 用
+	Role                  string `json:"role"`                    // login 时固化；同上
 	CurrentJTI            string `json:"current_jti"`
-	PreviousJTI           string `json:"previous_jti,omitempty"`
-	PreviousResponseUntil int64  `json:"previous_response_until,omitempty"`
-	AbsoluteExp           int64  `json:"abs_exp"`
-	DeviceLabel           string `json:"device_label"`
+	PreviousJTI           string `json:"previous_jti,omitempty"`             // grace window 用
+	PreviousResponseUntil int64  `json:"previous_response_until,omitempty"`  // unix seconds；grace 截止
+	AbsoluteExp           int64  `json:"abs_exp"`                            // unix seconds；rotation 不延长
+	DeviceLabel           string `json:"device_label"`                       // 从 User-Agent 解析
 	IPAtLogin             string `json:"ip_at_login"`
-	CreatedAt             int64  `json:"created_at"`
-	LastRotatedAt         int64  `json:"last_rotated_at"`
+	CreatedAt             int64  `json:"created_at"`                         // unix seconds
+	LastRotatedAt         int64  `json:"last_rotated_at"`                    // unix seconds
 }
 
 // FamilyStore — Refresh Token Family 的原子操作接口。
+// Save / Rotate / Revoke / RevokeAll 涉及多 key，皆以 Lua script 一次原子执行。
+// ListByUser 采 lazy cleanup：读取时顺手 SREM 已过期的孤儿 fid。
 type FamilyStore interface {
+	// Save：login 时建立新 family（同时 SADD 入 user_families 索引）
 	Save(ctx context.Context, state FamilyState) error
+
+	// Rotate：原子 CAS — 验证 presented_jti、更新 current/previous、设定 grace window。
+	// Lua 从 state 内部读 AbsoluteExp 计算 Redis TTL；触发重放时 Lua 自动 DEL family + SREM 索引。
+	//
+	// 回传 invariant：
+	//   - Rotated         → (Rotated, *FamilyState non-nil, nil)
+	//   - GraceHit        → (GraceHit, *FamilyState non-nil, nil)
+	//   - ReplayDetected  → (ReplayDetected, nil, nil)
+	//   - FamilyNotFound  → (FamilyNotFound, nil, nil)
+	//   - 其他 Redis error → (0, nil, err)
+	// 若 Rotated / GraceHit 回传 nil state（Lua bug / state_json 为空），caller **必须** fail-closed
+	// 视为 ErrFamilyNotFound，禁止对 nil 解参考造成 panic。
 	Rotate(ctx context.Context, userID, fid, presentedJTI, newJTI string,
 		graceWindow time.Duration) (RotateResult, *FamilyState, error)
+
+	// Revoke：登出单一 family
 	Revoke(ctx context.Context, userID, fid string) error
+
+	// RevokeAll：登出该 user 所有 family（改密码 / 强制全装置登出）
 	RevokeAll(ctx context.Context, userID string) error
+
+	// ListByUser：列出该 user 所有 family（含 lazy cleanup 孤儿 fid）。
+	// 用于 GET /auth/sessions 页面。
+	//
+	// Redis SMEMBERS 出来无序；本实作须在 Go layer 对结果 **sort by LastRotatedAt desc**，
+	// 让「最近活躃的装置」排在前面（UX 预期）。caller 不需再 sort。
 	ListByUser(ctx context.Context, userID string) ([]FamilyState, error)
+
+	// ScriptsLoaded 回报 NewFamilyStore constructor 内的 SCRIPT LOAD 是否已成功完成，
+	// 供 /health/ready 探测。constructor 内载入成功前回 false；成功后恒为 true
+	// （process 生命周期内不重置）。
+	//
+	// 为何不公开 PreloadScripts：避免 caller 在 constructor 之外 lazy-load 而忘了检查
+	// 回传 error；NewFamilyStore 拿到的 instance 必为「已 ready」状态，否则 constructor
+	// 直接回 error，由 main fatal 退出，避免冷启动首次 refresh 才踩到 NOSCRIPT 重试 latency。
 	ScriptsLoaded() bool
 }
 
 type familyStore struct {
 	client       *redis.Client
-	saveSHA      string
-	rotateSHA    string
-	revokeSHA    string
-	revokeAllSHA string
-	listSHA      string
+	saveScript   *redis.Script
+	rotateScript *redis.Script
+	revokeScript *redis.Script
+	revokeAllScr *redis.Script
+	listScript   *redis.Script
 	scriptsReady bool
 }
 
 // NewFamilyStore — constructor 内自动 SCRIPT LOAD 所有 Lua script。
 // 失败回 error；caller（main）应 fatal 退出。
+// ctx 用于 SCRIPT LOAD 的 timeout / cancel，建议从 main 传入带 timeout 的 ctx
+// （例如 5s）避免 Redis hang 卡住启动。
 func NewFamilyStore(ctx context.Context, client *redis.Client, cfg config.JWTConfig) (FamilyStore, error) {
 	fs := &familyStore{client: client}
 
-	// 加载 Lua 脚本
-	// 在实际部署时，脚本会从 embed 或文件中读取
-	// 这里使用内联脚本展示结构
+	// 从 embed.FS 读取所有 Lua 脚本
+	saveBody, err := scriptsFS.ReadFile("scripts/save.lua")
+	if err != nil {
+		return nil, fmt.Errorf("read save.lua: %w", err)
+	}
 
-	// 为了简化，这里使用 Script 对象，实际生产会从文件读取
-	// TODO: 从 pkg/redis/scripts 中读取脚本
+	rotateBody, err := scriptsFS.ReadFile("scripts/rotate.lua")
+	if err != nil {
+		return nil, fmt.Errorf("read rotate.lua: %w", err)
+	}
+
+	revokeBody, err := scriptsFS.ReadFile("scripts/revoke.lua")
+	if err != nil {
+		return nil, fmt.Errorf("read revoke.lua: %w", err)
+	}
+
+	revokeAllBody, err := scriptsFS.ReadFile("scripts/revoke_all.lua")
+	if err != nil {
+		return nil, fmt.Errorf("read revoke_all.lua: %w", err)
+	}
+
+	listBody, err := scriptsFS.ReadFile("scripts/list_with_cleanup.lua")
+	if err != nil {
+		return nil, fmt.Errorf("read list_with_cleanup.lua: %w", err)
+	}
+
+	// 包装成 redis.Script 对象，并自动 SCRIPT LOAD
+	fs.saveScript = redis.NewScript(string(saveBody))
+	fs.rotateScript = redis.NewScript(string(rotateBody))
+	fs.revokeScript = redis.NewScript(string(revokeBody))
+	fs.revokeAllScr = redis.NewScript(string(revokeAllBody))
+	fs.listScript = redis.NewScript(string(listBody))
+
+	// 预加载所有脚本，失败则 constructor 回 error
+	_, err = fs.saveScript.Load(ctx, client).Result()
+	if err != nil {
+		return nil, fmt.Errorf("load save.lua: %w", err)
+	}
+
+	_, err = fs.rotateScript.Load(ctx, client).Result()
+	if err != nil {
+		return nil, fmt.Errorf("load rotate.lua: %w", err)
+	}
+
+	_, err = fs.revokeScript.Load(ctx, client).Result()
+	if err != nil {
+		return nil, fmt.Errorf("load revoke.lua: %w", err)
+	}
+
+	_, err = fs.revokeAllScr.Load(ctx, client).Result()
+	if err != nil {
+		return nil, fmt.Errorf("load revoke_all.lua: %w", err)
+	}
+
+	_, err = fs.listScript.Load(ctx, client).Result()
+	if err != nil {
+		return nil, fmt.Errorf("load list_with_cleanup.lua: %w", err)
+	}
 
 	fs.scriptsReady = true
 	return fs, nil
@@ -93,15 +192,22 @@ func (fs *familyStore) Save(ctx context.Context, state FamilyState) error {
 		return fmt.Errorf("absolute exp already passed")
 	}
 
-	key := fmt.Sprintf("auth:family:{%s}:%s", state.UserID, state.FamilyID)
-	indexKey := fmt.Sprintf("auth:user_families:{%s}", state.UserID)
+	// KEYS[1] = auth:family:{userID}:fid
+	// KEYS[2] = auth:user_families:{userID}
+	// ARGV[1] = family_state_json
+	// ARGV[2] = abs_ttl_seconds
+	// ARGV[3] = fid
+	keys := []string{
+		fmt.Sprintf("auth:family:{%s}:%s", state.UserID, state.FamilyID),
+		fmt.Sprintf("auth:user_families:{%s}", state.UserID),
+	}
+	argv := []interface{}{
+		string(stateJSON),
+		strconv.FormatInt(absTTL, 10),
+		state.FamilyID,
+	}
 
-	// 简化版：直接使用原始命令而不是 Lua（在生产中应使用 Lua）
-	pipe := fs.client.Pipeline()
-	pipe.Set(ctx, key, string(stateJSON), time.Duration(absTTL)*time.Second)
-	pipe.SAdd(ctx, indexKey, state.FamilyID)
-	_, err = pipe.Exec(ctx)
-
+	_, err = fs.saveScript.Run(ctx, fs.client, keys, argv...).Result()
 	return err
 }
 
@@ -112,118 +218,147 @@ func (fs *familyStore) Rotate(ctx context.Context, userID, fid, presentedJTI, ne
 		return 0, nil, fmt.Errorf("family store not ready")
 	}
 
-	key := fmt.Sprintf("auth:family:{%s}:%s", userID, fid)
-	raw, err := fs.client.Get(ctx, key).Result()
-	if err == redis.Nil {
-		return FamilyNotFound, nil, nil
+	now := time.Now().Unix()
+	graceWindowSeconds := int64(graceWindow.Seconds())
+
+	// KEYS[1] = auth:family:{userID}:fid
+	// KEYS[2] = auth:user_families:{userID}
+	// ARGV[1] = presented_jti
+	// ARGV[2] = new_jti
+	// ARGV[3] = now_unix
+	// ARGV[4] = grace_window_seconds
+	// ARGV[5] = fid
+	keys := []string{
+		fmt.Sprintf("auth:family:{%s}:%s", userID, fid),
+		fmt.Sprintf("auth:user_families:{%s}", userID),
 	}
+	argv := []interface{}{
+		presentedJTI,
+		newJTI,
+		strconv.FormatInt(now, 10),
+		strconv.FormatInt(graceWindowSeconds, 10),
+		fid,
+	}
+
+	result, err := fs.rotateScript.Run(ctx, fs.client, keys, argv...).Result()
 	if err != nil {
 		return 0, nil, err
 	}
 
-	var state FamilyState
-	if err := json.Unmarshal([]byte(raw), &state); err != nil {
-		return 0, nil, fmt.Errorf("unmarshal family state: %w", err)
+	// Lua 回传 {code, state_json}
+	arr, ok := result.([]interface{})
+	if !ok || len(arr) < 2 {
+		return 0, nil, fmt.Errorf("unexpected rotate script result type: %T", result)
 	}
 
-	now := time.Now().Unix()
-	absTTLRemaining := state.AbsoluteExp - now
+	code, ok := arr[0].(int64)
+	if !ok {
+		return 0, nil, fmt.Errorf("unexpected rotate code type: %T", arr[0])
+	}
 
-	// abs_exp 过期
-	if absTTLRemaining <= 0 {
-		indexKey := fmt.Sprintf("auth:user_families:{%s}", userID)
-		fs.client.Del(ctx, key)
-		fs.client.SRem(ctx, indexKey, fid)
+	stateJSON, ok := arr[1].(string)
+	if !ok {
+		return 0, nil, fmt.Errorf("unexpected rotate state_json type: %T", arr[1])
+	}
+
+	rotateResult := RotateResult(code)
+
+	// 处理 ReplayDetected 和 FamilyNotFound，都回传 nil state
+	if rotateResult == ReplayDetected || rotateResult == FamilyNotFound {
+		return rotateResult, nil, nil
+	}
+
+	// 处理 Rotated 和 GraceHit：必须有 state_json，否则 fail-closed 视为 ErrFamilyNotFound
+	if stateJSON == "" {
 		return FamilyNotFound, nil, nil
 	}
 
-	// 正常 rotation
-	if state.CurrentJTI == presentedJTI {
-		state.PreviousJTI = state.CurrentJTI
-		state.PreviousResponseUntil = now + int64(graceWindow.Seconds())
-		state.CurrentJTI = newJTI
-		state.LastRotatedAt = now
-
-		stateJSON, _ := json.Marshal(state)
-		fs.client.Set(ctx, key, string(stateJSON), time.Duration(absTTLRemaining)*time.Second)
-		return Rotated, &state, nil
+	var state FamilyState
+	if err := json.Unmarshal([]byte(stateJSON), &state); err != nil {
+		// Lua 返回了错误的 JSON，fail-closed
+		return FamilyNotFound, nil, nil
 	}
 
-	// Grace window 命中
-	if state.PreviousJTI == presentedJTI && state.PreviousResponseUntil > now {
-		return GraceHit, &state, nil
-	}
-
-	// 重放检测
-	indexKey := fmt.Sprintf("auth:user_families:{%s}", userID)
-	fs.client.Del(ctx, key)
-	fs.client.SRem(ctx, indexKey, fid)
-	return ReplayDetected, nil, nil
+	return rotateResult, &state, nil
 }
 
 // Revoke 实现 FamilyStore.Revoke。
 func (fs *familyStore) Revoke(ctx context.Context, userID, fid string) error {
-	key := fmt.Sprintf("auth:family:{%s}:%s", userID, fid)
-	indexKey := fmt.Sprintf("auth:user_families:{%s}", userID)
+	if !fs.scriptsReady {
+		return fmt.Errorf("family store not ready")
+	}
 
-	pipe := fs.client.Pipeline()
-	pipe.Del(ctx, key)
-	pipe.SRem(ctx, indexKey, fid)
-	_, err := pipe.Exec(ctx)
+	// KEYS[1] = auth:family:{userID}:fid
+	// KEYS[2] = auth:user_families:{userID}
+	// ARGV[1] = fid
+	keys := []string{
+		fmt.Sprintf("auth:family:{%s}:%s", userID, fid),
+		fmt.Sprintf("auth:user_families:{%s}", userID),
+	}
+	argv := []interface{}{fid}
 
+	_, err := fs.revokeScript.Run(ctx, fs.client, keys, argv...).Result()
 	return err
 }
 
 // RevokeAll 实现 FamilyStore.RevokeAll。
 func (fs *familyStore) RevokeAll(ctx context.Context, userID string) error {
-	indexKey := fmt.Sprintf("auth:user_families:{%s}", userID)
-
-	fids, err := fs.client.SMembers(ctx, indexKey).Result()
-	if err != nil {
-		return err
+	if !fs.scriptsReady {
+		return fmt.Errorf("family store not ready")
 	}
 
-	pipe := fs.client.Pipeline()
-	for _, fid := range fids {
-		key := fmt.Sprintf("auth:family:{%s}:%s", userID, fid)
-		pipe.Del(ctx, key)
+	// KEYS[1] = auth:user_families:{userID}
+	// ARGV[1] = user_id
+	keys := []string{
+		fmt.Sprintf("auth:user_families:{%s}", userID),
 	}
-	pipe.Del(ctx, indexKey)
-	_, err = pipe.Exec(ctx)
+	argv := []interface{}{userID}
 
+	_, err := fs.revokeAllScr.Run(ctx, fs.client, keys, argv...).Result()
 	return err
 }
 
 // ListByUser 实现 FamilyStore.ListByUser。
 func (fs *familyStore) ListByUser(ctx context.Context, userID string) ([]FamilyState, error) {
-	indexKey := fmt.Sprintf("auth:user_families:{%s}", userID)
+	if !fs.scriptsReady {
+		return nil, fmt.Errorf("family store not ready")
+	}
 
-	fids, err := fs.client.SMembers(ctx, indexKey).Result()
+	// KEYS[1] = auth:user_families:{userID}
+	// ARGV[1] = user_id
+	keys := []string{
+		fmt.Sprintf("auth:user_families:{%s}", userID),
+	}
+	argv := []interface{}{userID}
+
+	result, err := fs.listScript.Run(ctx, fs.client, keys, argv...).Result()
 	if err != nil {
 		return nil, err
 	}
 
+	// Lua 回传 array of state_json strings
+	arr, ok := result.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected list script result type: %T", result)
+	}
+
 	var states []FamilyState
-	for _, fid := range fids {
-		key := fmt.Sprintf("auth:family:{%s}:%s", userID, fid)
-		raw, err := fs.client.Get(ctx, key).Result()
-		if err == redis.Nil {
-			// Lazy cleanup: 孤儿 fid
-			fs.client.SRem(ctx, indexKey, fid)
+	for _, item := range arr {
+		stateJSON, ok := item.(string)
+		if !ok {
+			// 跳过格式错误的项
 			continue
-		}
-		if err != nil {
-			return nil, err
 		}
 
 		var state FamilyState
-		if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		if err := json.Unmarshal([]byte(stateJSON), &state); err != nil {
+			// 跳过无法解析的项
 			continue
 		}
 		states = append(states, state)
 	}
 
-	// 按 LastRotatedAt desc 排序
+	// 按 LastRotatedAt desc 排序（最近活躃的装置排在前面）
 	sort.Slice(states, func(i, j int) bool {
 		return states[i].LastRotatedAt > states[j].LastRotatedAt
 	})

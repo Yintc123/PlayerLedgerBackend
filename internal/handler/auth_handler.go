@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yintengching/playerledger/internal/service"
@@ -24,7 +25,7 @@ func NewAuthHandler(authService service.AuthService) *AuthHandler {
 // RegisterRequest 注册请求。
 type RegisterRequest struct {
 	Username string `json:"username" binding:"required,min=3,max=64"`
-	Password string `json:"password" binding:"required,min=8,max=256"`
+	Password string `json:"password" binding:"required,max=256"`
 	ClientID string `json:"client_id" binding:"required"`
 }
 
@@ -36,7 +37,11 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	if err := h.authService.Register(c.Request.Context(), req.Username, req.Password, req.ClientID); err != nil {
+	if err := h.authService.Register(c.Request.Context(), service.RegisterInput{
+		Username: req.Username,
+		Password: req.Password,
+		ClientID: req.ClientID,
+	}); err != nil {
 		httpx.HandleError(c, err)
 		return
 	}
@@ -59,7 +64,13 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	tokenPair, err := h.authService.Login(c.Request.Context(), req.Username, req.Password, req.ClientID)
+	tokenPair, err := h.authService.Login(c.Request.Context(), service.LoginInput{
+		Username:  req.Username,
+		Password:  req.Password,
+		ClientID:  req.ClientID,
+		IP:        c.ClientIP(),
+		UserAgent: c.Request.Header.Get("User-Agent"),
+	})
 	if err != nil {
 		httpx.HandleError(c, err)
 		return
@@ -82,7 +93,11 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-	tokenPair, err := h.authService.Refresh(c.Request.Context(), req.RefreshToken)
+	tokenPair, err := h.authService.Refresh(c.Request.Context(), service.RefreshInput{
+		RefreshToken: req.RefreshToken,
+		IP:           c.ClientIP(),
+		UserAgent:    c.Request.Header.Get("User-Agent"),
+	})
 	if err != nil {
 		httpx.HandleError(c, err)
 		return
@@ -100,7 +115,18 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		return
 	}
 
-	if err := h.authService.Logout(c.Request.Context(), claims.UserID(), claims.FamilyID, claims.ID); err != nil {
+	remaining := time.Until(claims.ExpiresAt.Time)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	if err := h.authService.Logout(c.Request.Context(), service.LogoutInput{
+		UserID:            claims.UserID(),
+		FamilyID:          claims.FamilyID,
+		AccessJTI:         claims.ID,
+		AccessRemain:      remaining,
+		RefreshToken:      "",
+	}); err != nil {
 		httpx.HandleError(c, err)
 		return
 	}
@@ -116,7 +142,7 @@ func (h *AuthHandler) ListSessions(c *gin.Context) {
 		return
 	}
 
-	sessions, err := h.authService.ListSessions(c.Request.Context(), claims.UserID())
+	sessions, err := h.authService.ListSessions(c.Request.Context(), claims.UserID(), claims.FamilyID)
 	if err != nil {
 		httpx.HandleError(c, err)
 		return
@@ -134,8 +160,8 @@ func (h *AuthHandler) RevokeSession(c *gin.Context) {
 		return
 	}
 
-	fid := c.Param("fid")
-	if err := h.authService.RevokeSession(c.Request.Context(), claims.UserID(), claims.FamilyID, fid); err != nil {
+	targetFID := c.Param("fid")
+	if err := h.authService.RevokeSession(c.Request.Context(), claims.UserID(), claims.FamilyID, targetFID); err != nil {
 		httpx.HandleError(c, err)
 		return
 	}
@@ -143,15 +169,20 @@ func (h *AuthHandler) RevokeSession(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// RevokeAll POST /auth/sessions/revoke-all
-func (h *AuthHandler) RevokeAll(c *gin.Context) {
+// RevokeAllSessions POST /auth/sessions/revoke-all
+func (h *AuthHandler) RevokeAllSessions(c *gin.Context) {
 	claims, ok := jwt.GetClaims(c)
 	if !ok {
 		httpx.WriteError(c, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	if err := h.authService.RevokeAll(c.Request.Context(), claims.UserID()); err != nil {
+	remaining := time.Until(claims.ExpiresAt.Time)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	if err := h.authService.RevokeAll(c.Request.Context(), claims.UserID(), claims.ID, remaining); err != nil {
 		httpx.HandleError(c, err)
 		return
 	}

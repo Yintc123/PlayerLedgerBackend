@@ -7,17 +7,21 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yintengching/playerledger/config"
 	"github.com/yintengching/playerledger/internal/handler"
 	"github.com/yintengching/playerledger/internal/repository"
 	"github.com/yintengching/playerledger/internal/service"
+	"github.com/yintengching/playerledger/pkg/audit"
 	"github.com/yintengching/playerledger/pkg/auth/hasher"
 	"github.com/yintengching/playerledger/pkg/database"
 	"github.com/yintengching/playerledger/pkg/httpx"
 	"github.com/yintengching/playerledger/pkg/jwt"
 	"github.com/yintengching/playerledger/pkg/logger"
+	"github.com/yintengching/playerledger/pkg/metrics"
+	"github.com/yintengching/playerledger/pkg/ratelimit"
 	"github.com/yintengching/playerledger/pkg/redis"
 )
 
@@ -37,6 +41,16 @@ func main() {
 
 	log := logger.L()
 	log.Info("PlayerLedger Backend initializing")
+
+	// 2b. 初始化审计日志（§18.3）
+	auditLogDir := os.Getenv("AUDIT_LOG_DIR")
+	if auditLogDir == "" {
+		auditLogDir = "/var/log/playerledger"
+	}
+	if err := audit.Init(fmt.Sprintf("%s/audit.log", auditLogDir), 100, 10, 30); err != nil {
+		log.Warn(fmt.Sprintf("failed to init audit logger: %v", err))
+		// 不 fatal：audit logger 故障不应阻断应用启动
+	}
 
 	// 3. 连接数据库
 	db, err := database.Connect(cfg.Database)
@@ -62,17 +76,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 6. 初始化 Repositories 和 Services
+	// 6. 初始化 Metrics（§18.2）
+	sqlDB, err := db.DB()
+	if err == nil {
+		metrics.Init(sqlDB, os.Getenv("VERSION"), os.Getenv("COMMIT"), time.Now().Format("2006-01-02"))
+	}
+
+	// 7. 初始化 Rate Limiting Store（§15.4）
+	limiterStore, err := ratelimit.NewRedisStore(redisClient, "ratelimit")
+	if err != nil {
+		log.Warn(fmt.Sprintf("failed to init rate limiter store: %v", err))
+		// 不 fatal：rate limiting 故障应 fail-open
+	}
+
+	// 8. 初始化 Repositories 和 Services
 	cmsUserRepo := repository.NewCMSUserRepository(db)
 	memberRepo := repository.NewMemberRepository(db)
 	bcryptHasher := hasher.NewBcryptHasher(cfg.JWT.BcryptCost)
 	blacklist := redis.NewAccessTokenBlacklist(redisClient)
 	authService := service.NewAuthService(cmsUserRepo, memberRepo, jwtManager, bcryptHasher, familyStore, blacklist)
 
-	// 7. 设置 Gin 模式
+	// 9. 设置 Gin 模式
 	gin.SetMode(cfg.Server.GinMode)
 
-	// 8. 创建路由引擎
+	// 10. 创建路由引擎
 	router := gin.New()
 
 	// 应用中间件（按顺序 §9.2）
@@ -87,32 +114,44 @@ func main() {
 		router.SetTrustedProxies(cfg.Server.TrustedProxies)
 	}
 
-	// 9. 路由注册
+	// 11. 路由注册
 
-	// 健康检查（不需要 auth）
+	// 健康检查（不需要 auth、不限流）
 	healthHandler := handler.NewHealthHandler(db)
 	router.GET("/health", healthHandler.GetHealth)
 	router.GET("/health/ready", healthHandler.GetReadiness)
 
+	// Metrics（不需要 auth、不限流，由网络层隔离，§18.1）
+	router.GET("/metrics", metrics.Handler())
+
+	// API endpoints（应用 IP 层限流，§15.2）
+	apiGroup := router.Group("/api/v1")
+	if limiterStore != nil {
+		apiGroup.Use(ratelimit.IPMiddleware(1*time.Minute, 100, limiterStore))
+	}
+
 	// Auth endpoints
 	authHandler := handler.NewAuthHandler(authService)
-	authGroup := router.Group("/auth")
+	authGroup := apiGroup.Group("/auth")
 	{
 		authGroup.POST("/register", authHandler.Register)
 		authGroup.POST("/login", authHandler.Login)
 		authGroup.POST("/refresh", authHandler.Refresh)
 
-		// 需要 auth 的 endpoints
-		authGroupAuth := authGroup.Group("").Use(jwt.AuthMiddleware(jwtManager))
+		// 需要 auth 的 endpoints（§8.5 含 blacklist 检查）
+		authGroupAuth := authGroup.Group("").Use(jwt.AuthMiddleware(jwtManager, blacklist))
+		if limiterStore != nil {
+			authGroupAuth.Use(ratelimit.UserMiddleware(1*time.Minute, 1000, limiterStore))
+		}
 		{
 			authGroupAuth.POST("/logout", authHandler.Logout)
 			authGroupAuth.GET("/sessions", authHandler.ListSessions)
 			authGroupAuth.DELETE("/sessions/:fid", authHandler.RevokeSession)
-			authGroupAuth.POST("/sessions/revoke-all", authHandler.RevokeAll)
+			authGroupAuth.POST("/sessions/revoke-all", authHandler.RevokeAllSessions)
 		}
 	}
 
-	// 10. 启动 HTTP 服务器
+	// 12. 启动 HTTP 服务器
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:           router,
@@ -139,7 +178,7 @@ func main() {
 
 	log.Info("Shutting down server")
 
-	// Graceful shutdown（§14.2）
+	// Graceful shutdown（§14.2）：HTTP → Redis → DB → Audit logger → App logger
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 
@@ -157,7 +196,12 @@ func main() {
 		log.Error(fmt.Sprintf("Database close error: %v", err))
 	}
 
-	// 同步日志
+	// Sync audit logger（安全相关日志优先级最高，§14.2）
+	if err := audit.Sync(); err != nil {
+		fmt.Fprintf(os.Stderr, "audit logger sync error: %v\n", err)
+	}
+
+	// 同步应用日志
 	logger.Sync()
 
 	log.Info("Server stopped")

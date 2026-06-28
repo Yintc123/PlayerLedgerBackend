@@ -17,3 +17,9 @@ type Hasher interface {
 	// 其他错误返回 (false, err)。
 	Compare(hash, password string) (bool, error)
 }
+
+// PolicyOf 从配置中读取 bcrypt cost 参数。
+// cost 必须在 [10, 15] 范围内（bcrypt 要求 4-31，但生产环境建议 10-15）。
+func PolicyOf(cost int) int {
+	return cost
+}

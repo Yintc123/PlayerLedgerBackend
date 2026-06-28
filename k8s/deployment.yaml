@@ -1,0 +1,218 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: playerledger
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: playerledger-config
+  namespace: playerledger
+data:
+  APP_ENV: "prod"
+  PORT: "8080"
+  GIN_MODE: "release"
+  ALLOWED_ORIGINS: "https://example.com"
+  DB_HOST: "postgres.playerledger.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "playerledger"
+  DB_SSLMODE: "require"
+  DB_MAX_OPEN_CONNS: "25"
+  DB_MAX_IDLE_CONNS: "5"
+  REDIS_HOST: "redis.playerledger.svc.cluster.local"
+  REDIS_PORT: "6379"
+  JWT_ISSUER: "playerledger"
+  JWT_ACCESS_TTL: "15m"
+  JWT_GRACE_WINDOW: "10s"
+  JWT_CLOCK_SKEW_LEEWAY: "30s"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  METRICS_ENABLED: "true"
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_IP_PERIOD: "1m"
+  RATE_LIMIT_IP_MAX: "100"
+  RATE_LIMIT_USER_PERIOD: "1m"
+  RATE_LIMIT_USER_MAX: "1000"
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: playerledger
+  namespace: playerledger
+  labels:
+    app: playerledger
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: playerledger
+  template:
+    metadata:
+      labels:
+        app: playerledger
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: playerledger
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      
+      containers:
+      - name: api
+        image: ghcr.io/example/playerledger:v1.0.0
+        imagePullPolicy: IfNotPresent
+        
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        envFrom:
+        - configMapRef:
+            name: playerledger-config
+        
+        env:
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: playerledger-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: playerledger-secrets
+              key: db-password
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: playerledger-secrets
+              key: redis-password
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: playerledger-secrets
+              key: jwt-secret
+        - name: JWT_REFRESH_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: playerledger-secrets
+              key: jwt-refresh-secret
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 5
+        
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 2
+          timeoutSeconds: 5
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      
+      volumes:
+      - name: tmp
+        emptyDir: {}
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: playerledger
+  namespace: playerledger
+  labels:
+    app: playerledger
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+  selector:
+    app: playerledger
+
+---
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: playerledger-allow-metrics-from-monitoring
+  namespace: playerledger
+spec:
+  podSelector:
+    matchLabels:
+      app: playerledger
+  policyTypes:
+  - Ingress
+  ingress:
+  # 業務流量（從 ingress controller / api gateway）
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8080
+  # /metrics 限定 monitoring namespace 的 Prometheus
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - protocol: TCP
+      port: 8080
+
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: playerledger
+  namespace: playerledger
