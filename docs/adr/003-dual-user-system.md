@@ -14,6 +14,14 @@
 >
 > 決策不變（型別區分、enum、雙表分離），只是實作位置調整。
 
+> **修訂註（2026-06-28，infrastructure.md v1.9+）**：
+> 原文 §1 `AccessClaims` 寫獨立 `UserID string` `json:"uid"` 欄位、§2 `SignAccess` 簽章為位置參數。實際落地改為：
+> - **User ID 攜帶於 `RegisteredClaims.Subject`（標準 `sub` claim）**，遵循 JWT RFC 7519 慣例；移除原獨立 `UserID` / `uid` 欄位。
+> - **新增 `(c *AccessClaims) UserID() string` helper**（即 `c.Subject` 的具名 alias）。所有 middleware / service / audit 一律呼叫此 method，**禁止直接讀 `Subject`**。
+> - **`SignAccess` 改為 struct param**：`SignAccess(p SignAccessParams)`，避免位置參數膨脹。
+>
+> 理由：對齊 JWT 標準，未來接 OAuth / OIDC / 第三方 SSO 不需轉換 claim 名稱；helper alias 讓未來改 carriage（複合 ID 等）只動一處。決策不變（雙表分離 / `utype` 路由），只是 claim 命名與簽章 ergonomics 調整。下方原文 §1 / §2 / §3 程式碼已同步更新。
+
 ---
 
 ## 背景
@@ -37,11 +45,13 @@
 
 ```go
 type AccessClaims struct {
-    jwt.RegisteredClaims
-    UserID   string   `json:"uid"`
-    UserType UserType `json:"utype"` // "cms" | "member"
+    jwt.RegisteredClaims              // user ID 在 Subject；caller 透過 UserID() helper 取（infrastructure.md §8.3）
+    UserType UserType `json:"utype"`  // "cms" | "member"
     Role     Role     `json:"role"`
 }
+
+// UserID 是 RegisteredClaims.Subject 的具名 alias。
+func (c *AccessClaims) UserID() string { return c.Subject }
 ```
 
 `utype` 用於**資料表路由**，`role` 用於**權限控制**，職責不重疊。
@@ -64,12 +74,12 @@ func (u UserType) IsValid() bool { ... }
 `Manager` 介面使用強型別，傳錯型別編譯即報錯：
 
 ```go
-SignAccess(userID string, userType UserType, role Role) (token string, err error)
+SignAccess(p SignAccessParams) (token string, err error)  // SignAccessParams 詳見 infrastructure.md §8.3
 ```
 
 ### 3. Member 資料隔離
 
-`utype == "member"` 的請求，service 層**強制驗證** `claims.UserID == targetID`，不符合回傳 `ErrForbidden`。此規則在 service 層執行，不依賴 middleware，確保所有呼叫路徑都受保護。
+`utype == "member"` 的請求，由 **`pkg/jwt.RequireOwnership` middleware**（見上方 v1.8 修訂註）統一比對 `claims.UserID() == c.Param(<paramName>)`，不符回 403 `forbidden`；CMS 自動放行。
 
 ### 4. 角色清單
 
