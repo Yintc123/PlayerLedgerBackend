@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -9,63 +10,75 @@ import (
 	"github.com/yintengching/playerledger/internal/apperr"
 )
 
-// AccessClaims access token 的 claims。
+// AccessClaims — access token claims 定义。
+// RFC 7519 RegisteredClaims 提供 iss, sub, aud, exp, iat, jti。
+// 额外字段：utype, role, fid。
 type AccessClaims struct {
 	jwt.RegisteredClaims
 	UserType UserType `json:"utype"`
 	Role     Role     `json:"role"`
-	FamilyID string   `json:"fid"`
+	FamilyID string   `json:"fid"` // 对应后端 family，供管理员「廢掉 family 連帶 access」用
 }
 
-// RefreshClaims refresh token 的 claims。
+// RefreshClaims — refresh token claims 定义。
+// RegisteredClaims 提供 iss, sub, aud, exp, iat, jti。
+// 额外字段：utype, fid, abs_exp。
 type RefreshClaims struct {
 	jwt.RegisteredClaims
 	UserType    UserType `json:"utype"`
 	FamilyID    string   `json:"fid"`
-	AbsoluteExp int64    `json:"abs_exp"`
+	AbsoluteExp int64    `json:"abs_exp"` // unix seconds，rotation 不延长，超过则 ErrAbsoluteExpired
 }
 
-// UserID 返回 subject（user ID）。
+// UserID 是 RegisteredClaims.Subject 的具名 alias，遵循 JWT RFC 7519「sub claim 即 user identifier」慣例。
+// 所有 middleware / service / audit 取 user ID 一律呼叫此 method，禁止直接讀 c.Subject。
 func (c *AccessClaims) UserID() string  { return c.Subject }
 func (c *RefreshClaims) UserID() string { return c.Subject }
 
-// SignAccessParams access token 签署参数。
+// SignAccessParams — SignAccess 參數結構。
+// Issuer 由 jwtManager 內部以 JWTConfig.Issuer 自動填入，不放 Params。
 type SignAccessParams struct {
-	UserID   string
-	UserType UserType
-	Role     Role
-	FamilyID string
-	ClientID string
-	JTI      string
-	TTL      time.Duration
+	UserID   string        // 寫入 JWT 的 sub（RegisteredClaims.Subject）
+	UserType UserType      // user type（cms / member）
+	Role     Role          // user role（admin / user / viewer / member）
+	FamilyID string        // token 所屬 family（session）
+	ClientID string        // 寫入 aud
+	JTI      string        // 呼叫端產生（每次都新）
+	TTL      time.Duration // 預設取 JWTConfig.AccessTTL
 }
 
-// SignRefreshParams refresh token 签署参数。
+// SignRefreshParams — SignRefresh 參數結構。
 type SignRefreshParams struct {
-	UserID      string
-	UserType    UserType
-	FamilyID    string
-	ClientID    string
-	JTI         string
-	TTL         time.Duration
-	AbsoluteExp time.Time
+	UserID      string        // 寫入 sub
+	UserType    UserType      // user type
+	FamilyID    string        // token 所屬 family
+	ClientID    string        // 寫入 aud
+	JTI         string        // Login=新；Rotated=新；GraceHit=取 state.CurrentJTI
+	TTL         time.Duration // 來自 client policy 的 RefreshTTL
+	AbsoluteExp time.Time     // 必須從 server-side state 取（FamilyState.AbsoluteExp），rotation/grace 不改
 }
 
-// Manager JWT 签发与验证接口。
+// Manager 所有 method 第一參數均為 context.Context，對齊規範「所有 service / repository 簽章必接 ctx」原則。
+// Sign / Verify 本身為 in-memory HMAC 計算，不會 cancel；ctx 主要保留給未來 OTel span 與測試
+// （fake manager 可從 ctx 取注入值），降低介面演進成本。
 type Manager interface {
-	SignAccess(p SignAccessParams) (string, error)
-	VerifyAccess(token string) (*AccessClaims, error)
-	SignRefresh(p SignRefreshParams) (string, error)
-	VerifyRefresh(token string) (*RefreshClaims, error)
-	PolicyOf(clientID string) (config.ClientPolicy, error)
+	SignAccess(ctx context.Context, p SignAccessParams) (token string, err error)
+	VerifyAccess(ctx context.Context, token string) (*AccessClaims, error)
+	SignRefresh(ctx context.Context, p SignRefreshParams) (token string, err error)
+	VerifyRefresh(ctx context.Context, token string) (*RefreshClaims, error)
+
+	// PolicyOf 從 client_id 取對應 ClientPolicy；找不到回 ErrInvalidClient。
+	PolicyOf(ctx context.Context, clientID string) (config.ClientPolicy, error)
 }
 
 type manager struct {
-	cfg              config.JWTConfig
-	clientIDWhitelist map[string]bool
+	cfg                config.JWTConfig
+	clientIDWhitelist  map[string]bool
 }
 
-// NewManager 创建 JWT Manager。
+// NewManager 由 cfg 構造 Manager。
+// 簽章：一律使用 cfg.Secret / cfg.RefreshSecret，演算法固定 HS256。
+// 詳見規格 §8.3 NewManager 文件。
 func NewManager(cfg config.JWTConfig) Manager {
 	whitelist := make(map[string]bool)
 	for clientID := range cfg.ClientPolicies {
@@ -73,19 +86,20 @@ func NewManager(cfg config.JWTConfig) Manager {
 	}
 
 	return &manager{
-		cfg:              cfg,
+		cfg:               cfg,
 		clientIDWhitelist: whitelist,
 	}
 }
 
-// SignAccess 签署 access token。
-func (m *manager) SignAccess(p SignAccessParams) (string, error) {
+// SignAccess 簽署 access token。
+// Issuer 由此內部自動填入（JWTConfig.Issuer）。
+func (m *manager) SignAccess(ctx context.Context, p SignAccessParams) (string, error) {
 	now := time.Now()
 	claims := &AccessClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   p.UserID,
 			Issuer:    m.cfg.Issuer,
-			Audience:  []string{p.ClientID},
+			Audience:  jwt.ClaimStrings{p.ClientID},
 			ExpiresAt: jwt.NewNumericDate(now.Add(p.TTL)),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ID:        p.JTI,
@@ -99,14 +113,15 @@ func (m *manager) SignAccess(p SignAccessParams) (string, error) {
 	return token.SignedString([]byte(m.cfg.Secret))
 }
 
-// SignRefresh 签署 refresh token。
-func (m *manager) SignRefresh(p SignRefreshParams) (string, error) {
+// SignRefresh 簽署 refresh token。
+// Issuer 由此內部自動填入。
+func (m *manager) SignRefresh(ctx context.Context, p SignRefreshParams) (string, error) {
 	now := time.Now()
 	claims := &RefreshClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   p.UserID,
 			Issuer:    m.cfg.Issuer,
-			Audience:  []string{p.ClientID},
+			Audience:  jwt.ClaimStrings{p.ClientID},
 			ExpiresAt: jwt.NewNumericDate(now.Add(p.TTL)),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ID:        p.JTI,
@@ -120,92 +135,164 @@ func (m *manager) SignRefresh(p SignRefreshParams) (string, error) {
 	return token.SignedString([]byte(m.cfg.RefreshSecret))
 }
 
-// VerifyAccess 验证 access token。
-func (m *manager) VerifyAccess(tokenString string) (*AccessClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &AccessClaims{}, func(token *jwt.Token) (interface{}, error) {
-		// Alg 锁定 HS256
-		if token.Method.Alg() != "HS256" {
-			return nil, fmt.Errorf("invalid algorithm: %s", token.Method.Alg())
+// VerifyAccess 驗證 access token。
+// 驗證流程（詳見規格 §8.3）：
+//   0. Alg 鎖定 HS256（防 alg=none / alg confusion）
+//   1. 簽章先試主 secret，失敗再試 PreviousSecret（若已設定）→ 都失敗回 ErrInvalidToken
+//   2. iss 必須 == cfg.Issuer
+//   3. aud 必須 ∈ 已知 client_id 白名單
+//   4. 時間 claim 含 leeway
+func (m *manager) VerifyAccess(ctx context.Context, tokenString string) (*AccessClaims, error) {
+	// 步驟 0：嘗試用主 secret 驗證
+	token, err := jwt.ParseWithClaims(tokenString, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) {
+		// Alg 鎖定 HS256
+		hmacMethod, ok := t.Method.(*jwt.SigningMethodHMAC)
+		if !ok || t.Method.Alg() != "HS256" {
+			return nil, fmt.Errorf("invalid algorithm: expected HS256, got %s", t.Method.Alg())
 		}
-
-		// 先试主 secret
+		_ = hmacMethod // 避免 linter 警告
 		return []byte(m.cfg.Secret), nil
 	})
+
+	// 如果失敗且有 PreviousSecret，嘗試用舊 secret
+	if err != nil && m.cfg.PreviousSecret != "" {
+		token, err = jwt.ParseWithClaims(tokenString, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) {
+			if t.Method.Alg() != "HS256" {
+				return nil, fmt.Errorf("invalid algorithm: %s", t.Method.Alg())
+			}
+			return []byte(m.cfg.PreviousSecret), nil
+		})
+	}
 
 	if err != nil {
 		return nil, apperr.ErrInvalidToken
 	}
 
 	claims, ok := token.Claims.(*AccessClaims)
-	if !ok || !token.Valid {
+	if !ok {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// Issuer 检查
+	// 步驟 2：iss 檢查
 	if claims.Issuer != m.cfg.Issuer {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// Audience 检查
+	// 步驟 3：aud 檢查
 	if len(claims.Audience) == 0 || !m.clientIDWhitelist[claims.Audience[0]] {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// 含 leeway 的时间检查（由 jwt 库自动处理）
-	now := time.Now().Unix()
-	if claims.ExpiresAt != nil && now > claims.ExpiresAt.Time.Unix() + int64(m.cfg.ClockSkewLeeway.Seconds()) {
-		return nil, apperr.ErrTokenExpired
+	// 步驟 4：時間檢查含 leeway
+	now := time.Now()
+	if claims.ExpiresAt != nil {
+		expTime := claims.ExpiresAt.Time
+		if now.After(expTime.Add(m.cfg.ClockSkewLeeway)) {
+			return nil, apperr.ErrTokenExpired
+		}
+	}
+
+	// 檢查 NotBefore（不應在未來）
+	if claims.NotBefore != nil {
+		nbfTime := claims.NotBefore.Time
+		if now.Add(-m.cfg.ClockSkewLeeway).Before(nbfTime) {
+			return nil, apperr.ErrInvalidToken
+		}
+	}
+
+	// 檢查 IssuedAt（不應在未來）
+	if claims.IssuedAt != nil {
+		iatTime := claims.IssuedAt.Time
+		if now.Add(-m.cfg.ClockSkewLeeway).Before(iatTime) {
+			return nil, apperr.ErrInvalidToken
+		}
 	}
 
 	return claims, nil
 }
 
-// VerifyRefresh 验证 refresh token。
-func (m *manager) VerifyRefresh(tokenString string) (*RefreshClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &RefreshClaims{}, func(token *jwt.Token) (interface{}, error) {
-		// Alg 锁定 HS256
-		if token.Method.Alg() != "HS256" {
-			return nil, fmt.Errorf("invalid algorithm: %s", token.Method.Alg())
+// VerifyRefresh 驗證 refresh token。
+// 驗證流程（詳見規格 §8.3）：
+//   0-3. 同 VerifyAccess（alg / secret / iss / aud）
+//   4. 時間 claim 含 leeway
+//   5. abs_exp 額外檢查：abs_exp + leeway > now，否則 ErrAbsoluteExpired
+func (m *manager) VerifyRefresh(ctx context.Context, tokenString string) (*RefreshClaims, error) {
+	// 步驟 0：嘗試用主 secret 驗證
+	token, err := jwt.ParseWithClaims(tokenString, &RefreshClaims{}, func(t *jwt.Token) (interface{}, error) {
+		// Alg 鎖定 HS256
+		hmacMethod, ok := t.Method.(*jwt.SigningMethodHMAC)
+		if !ok || t.Method.Alg() != "HS256" {
+			return nil, fmt.Errorf("invalid algorithm: expected HS256, got %s", t.Method.Alg())
 		}
-
+		_ = hmacMethod
 		return []byte(m.cfg.RefreshSecret), nil
 	})
+
+	// 如果失敗且有 PreviousRefreshSecret，嘗試用舊 secret
+	if err != nil && m.cfg.PreviousRefreshSecret != "" {
+		token, err = jwt.ParseWithClaims(tokenString, &RefreshClaims{}, func(t *jwt.Token) (interface{}, error) {
+			if t.Method.Alg() != "HS256" {
+				return nil, fmt.Errorf("invalid algorithm: %s", t.Method.Alg())
+			}
+			return []byte(m.cfg.PreviousRefreshSecret), nil
+		})
+	}
 
 	if err != nil {
 		return nil, apperr.ErrInvalidToken
 	}
 
 	claims, ok := token.Claims.(*RefreshClaims)
-	if !ok || !token.Valid {
+	if !ok {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// Issuer 检查
+	// 步驟 2：iss 檢查
 	if claims.Issuer != m.cfg.Issuer {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// Audience 检查
+	// 步驟 3：aud 檢查
 	if len(claims.Audience) == 0 || !m.clientIDWhitelist[claims.Audience[0]] {
 		return nil, apperr.ErrInvalidToken
 	}
 
-	// exp 检查
-	now := time.Now().Unix()
-	if claims.ExpiresAt != nil && now > claims.ExpiresAt.Time.Unix() + int64(m.cfg.ClockSkewLeeway.Seconds()) {
-		return nil, apperr.ErrTokenExpired
+	// 步驟 4：時間檢查含 leeway
+	now := time.Now()
+	if claims.ExpiresAt != nil {
+		expTime := claims.ExpiresAt.Time
+		if now.After(expTime.Add(m.cfg.ClockSkewLeeway)) {
+			return nil, apperr.ErrTokenExpired
+		}
 	}
 
-	// abs_exp 检查
-	if now > claims.AbsoluteExp + int64(m.cfg.ClockSkewLeeway.Seconds()) {
+	// 檢查 NotBefore
+	if claims.NotBefore != nil {
+		nbfTime := claims.NotBefore.Time
+		if now.Add(-m.cfg.ClockSkewLeeway).Before(nbfTime) {
+			return nil, apperr.ErrInvalidToken
+		}
+	}
+
+	// 檢查 IssuedAt
+	if claims.IssuedAt != nil {
+		iatTime := claims.IssuedAt.Time
+		if now.Add(-m.cfg.ClockSkewLeeway).Before(iatTime) {
+			return nil, apperr.ErrInvalidToken
+		}
+	}
+
+	// 步驟 5：abs_exp 檢查（含 leeway）
+	absExpTime := time.Unix(claims.AbsoluteExp, 0)
+	if now.After(absExpTime.Add(m.cfg.ClockSkewLeeway)) {
 		return nil, apperr.ErrAbsoluteExpired
 	}
 
 	return claims, nil
 }
 
-// PolicyOf 获取 client 的 policy。
-func (m *manager) PolicyOf(clientID string) (config.ClientPolicy, error) {
+// PolicyOf 從 client_id 取對應 ClientPolicy；找不到回 ErrInvalidClient。
+func (m *manager) PolicyOf(ctx context.Context, clientID string) (config.ClientPolicy, error) {
 	policy, ok := m.cfg.ClientPolicies[clientID]
 	if !ok {
 		return config.ClientPolicy{}, apperr.ErrInvalidClient
