@@ -14,12 +14,13 @@ import (
 // EventType 安全事件類型（§18.3.2）
 type EventType string
 
+// gosec G101 false positive: 「token_rotated」是事件代碼，非憑證；本區段內所有值皆為公開 audit event name。
 const (
 	EventRegisterSuccess EventType = "auth.register_success"
 	EventRegisterFailed  EventType = "auth.register_failed"
 	EventLoginSuccess    EventType = "auth.login_success"
 	EventLoginFailed     EventType = "auth.login_failed"
-	EventTokenRotated    EventType = "auth.token_rotated"
+	EventTokenRotated    EventType = "auth.token_rotated"   // #nosec G101 -- event 名稱非憑證
 	EventReplayDetected  EventType = "auth.replay_detected" // ⚠️ 觸發告警
 	EventLogout          EventType = "auth.logout"
 	EventSessionRevoked  EventType = "auth.session_revoked"
@@ -100,7 +101,10 @@ func newAuditCore(path string) (zapcore.Core, error) {
 	if path == "" {
 		sink = zapcore.AddSync(os.Stdout)
 	} else {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+		// gosec G304 false positive: path 來自 LOG_AUDIT_PATH 環境變數，由 ops 在啟動前設定，
+		// 非 request 端動態輸入；config.Validate 已驗證 APP_ENV / Path 形式。
+		// gosec G302 真實修正: 改用 0o600（audit log 含敏感事件，僅 owner 讀寫）。
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 -- ops-controlled path
 		if err != nil {
 			return nil, fmt.Errorf("open audit log file %q: %w", path, err)
 		}

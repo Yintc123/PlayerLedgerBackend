@@ -285,6 +285,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "audit logger sync error: %v\n", err)
 	}
 
-	logger.Sync() //nolint:errcheck
+	// zap.Sync 對 stderr / stdout 在多數平台會回 syscall error（已知 quirk）；
+	// shutdown path 上沒地方再 log warn 也無意義，明確忽略並標記 gosec。
+	_ = logger.Sync() // #nosec G104 -- zap Sync on console sink is best-effort
 	log.Info("Server stopped")
 }

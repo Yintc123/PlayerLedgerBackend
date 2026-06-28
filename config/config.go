@@ -329,6 +329,8 @@ func bindEnvVars(v *viper.Viper) {
 		"ADMIN_USERNAME", "ADMIN_PASSWORD",
 	}
 	for _, key := range keys {
-		v.BindEnv(key) //nolint:errcheck
+		// Viper BindEnv 只在 empty key 時回 error；所有 key 都是上方常量列表，永遠非空。
+		// gosec G104 需要 #nosec 註解（不認 //nolint:errcheck）。
+		_ = v.BindEnv(key) // #nosec G104 -- key is non-empty constant
 	}
 }
