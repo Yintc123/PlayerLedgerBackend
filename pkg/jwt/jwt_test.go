@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/yintengching/playerledger/config"
-	"github.com/yintengching/playerledger/internal/apperr"
 )
 
 func TestNewManager(t *testing.T) {
@@ -39,7 +38,7 @@ func TestSignAccessToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, token)
 
-	// 验证令牌格式（3 部分）
+	// 驗證令牌格式（3 部分）
 	parts := strings.Split(token, ".")
 	assert.Len(t, parts, 3)
 }
@@ -83,7 +82,7 @@ func TestVerifyAccessToken_Valid(t *testing.T) {
 	token, err := mgr.SignAccess(ctx, params)
 	require.NoError(t, err)
 
-	// 验证令牌
+	// 驗證令牌
 	claims, err := mgr.VerifyAccess(ctx, token)
 	require.NoError(t, err)
 	assert.Equal(t, "user-123", claims.UserID())
@@ -101,7 +100,7 @@ func TestVerifyAccessToken_InvalidToken(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := mgr.VerifyAccess(ctx, "invalid.token.string")
-	assert.True(t, errors.Is(err, apperr.ErrInvalidToken))
+	assert.True(t, errors.Is(err, ErrInvalidToken))
 }
 
 func TestVerifyAccessToken_AlgNone_ShouldReject(t *testing.T) {
@@ -109,14 +108,14 @@ func TestVerifyAccessToken_AlgNone_ShouldReject(t *testing.T) {
 	mgr := NewManager(cfg)
 	ctx := context.Background()
 
-	// 创建手动的 alg=none token（模拟攻击）
-	// 标准库不允许签署 alg=none，但我们可以创建一个令牌字符串来测试拒绝逻辑
+	// 建立手动的 alg=none token（模拟攻击）
+	// 标准库不允许签署 alg=none，但我们可以建立一个令牌字符串来測試拒绝逻辑
 	// 以下是 alg=none 令牌的格式示例（不带签名）
 	noneToken := "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhdHRhY2tlciIsImlzcyI6InBsYXllcmxlZGdlciIsImF1ZCI6WyJjbXMtd2ViIl19."
 
 	// 应当拒绝
 	_, err := mgr.VerifyAccess(ctx, noneToken)
-	assert.True(t, errors.Is(err, apperr.ErrInvalidToken))
+	assert.True(t, errors.Is(err, ErrInvalidToken))
 }
 
 func TestVerifyAccessToken_AlgConfusion_ShouldReject(t *testing.T) {
@@ -140,18 +139,18 @@ func TestVerifyAccessToken_AlgConfusion_ShouldReject(t *testing.T) {
 	}
 
 	// 用 HS512 签署（不同的算法）
-	// 为了测试目的，我们创建一个不同算法的令牌
+	// 为了測試目的，我们建立一个不同算法的令牌
 	token := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
 	tokenString, _ := token.SignedString([]byte(cfg.Secret))
 
 	// 应当拒绝（不是 HS256）
 	_, err := mgr.VerifyAccess(ctx, tokenString)
-	assert.True(t, errors.Is(err, apperr.ErrInvalidToken))
+	assert.True(t, errors.Is(err, ErrInvalidToken))
 }
 
 func TestVerifyAccessToken_ExpiredToken(t *testing.T) {
 	cfg := newTestConfig()
-	cfg.ClockSkewLeeway = 0 // 严格模式，无容差
+	cfg.ClockSkewLeeway = 0 // 嚴格模式，无容差
 	mgr := NewManager(cfg)
 	ctx := context.Background()
 
@@ -162,13 +161,13 @@ func TestVerifyAccessToken_ExpiredToken(t *testing.T) {
 		FamilyID: "fid-456",
 		ClientID: "cms-web",
 		JTI:      "jti-789",
-		TTL:      -1 * time.Second, // 已过期
+		TTL:      -1 * time.Second, // 已過期
 	}
 	token, err := mgr.SignAccess(ctx, params)
 	require.NoError(t, err)
 
 	_, err = mgr.VerifyAccess(ctx, token)
-	assert.True(t, errors.Is(err, apperr.ErrTokenExpired))
+	assert.True(t, errors.Is(err, ErrTokenExpired))
 }
 
 func TestVerifyAccessToken_ClockSkewLeeway(t *testing.T) {
@@ -177,7 +176,7 @@ func TestVerifyAccessToken_ClockSkewLeeway(t *testing.T) {
 	mgr := NewManager(cfg)
 	ctx := context.Background()
 
-	// 创建刚好过期但在 leeway 范围内的令牌
+	// 建立刚好過期但在 leeway 范围内的令牌
 	params := SignAccessParams{
 		UserID:   "user-123",
 		UserType: UserTypeCMS,
@@ -185,7 +184,7 @@ func TestVerifyAccessToken_ClockSkewLeeway(t *testing.T) {
 		FamilyID: "fid-456",
 		ClientID: "cms-web",
 		JTI:      "jti-789",
-		TTL:      -10 * time.Second, // 10 秒前过期
+		TTL:      -10 * time.Second, // 10 秒前過期
 	}
 	token, err := mgr.SignAccess(ctx, params)
 	require.NoError(t, err)
@@ -221,7 +220,7 @@ func TestVerifyAccessToken_InvalidIssuer(t *testing.T) {
 
 	// 应当拒绝
 	_, err = wrongMgr.VerifyAccess(ctx, token)
-	assert.True(t, errors.Is(err, apperr.ErrInvalidToken))
+	assert.True(t, errors.Is(err, ErrInvalidToken))
 }
 
 func TestVerifyAccessToken_InvalidAudience(t *testing.T) {
@@ -251,7 +250,7 @@ func TestVerifyAccessToken_InvalidAudience(t *testing.T) {
 
 	// 应当拒绝（aud 不在白名单）
 	_, err = wrongMgr.VerifyAccess(ctx, token)
-	assert.True(t, errors.Is(err, apperr.ErrInvalidToken))
+	assert.True(t, errors.Is(err, ErrInvalidToken))
 }
 
 func TestVerifyAccessToken_PreviousSecretFallback(t *testing.T) {
@@ -284,7 +283,7 @@ func TestVerifyAccessToken_PreviousSecretFallback(t *testing.T) {
 	token, err := oldMgr.SignAccess(ctx, params)
 	require.NoError(t, err)
 
-	// 用新配置验证（新 secret + 旧 secret 作为 fallback）
+	// 用新配置驗證（新 secret + 旧 secret 作为 fallback）
 	newCfg := config.JWTConfig{
 		Issuer:            "playerledger",
 		Secret:            "new-secret-must-be-at-least-32-chars-long-xxx",
@@ -333,7 +332,7 @@ func TestVerifyRefreshToken_AbsoluteExpired(t *testing.T) {
 	mgr := NewManager(cfg)
 	ctx := context.Background()
 
-	// abs_exp 已过期
+	// abs_exp 已過期
 	absExp := time.Now().Add(-1 * time.Hour)
 	params := SignRefreshParams{
 		UserID:      "user-123",
@@ -341,14 +340,14 @@ func TestVerifyRefreshToken_AbsoluteExpired(t *testing.T) {
 		FamilyID:    "fid-456",
 		ClientID:    "cms-web",
 		JTI:         "jti-refresh",
-		TTL:         1 * time.Hour, // exp 未过期
-		AbsoluteExp: absExp,        // 但 abs_exp 过期
+		TTL:         1 * time.Hour, // exp 未過期
+		AbsoluteExp: absExp,        // 但 abs_exp 過期
 	}
 	token, err := mgr.SignRefresh(ctx, params)
 	require.NoError(t, err)
 
 	_, err = mgr.VerifyRefresh(ctx, token)
-	assert.True(t, errors.Is(err, apperr.ErrAbsoluteExpired))
+	assert.True(t, errors.Is(err, ErrAbsoluteExpired))
 }
 
 func TestVerifyRefreshToken_AbsoluteExpWithLeeway(t *testing.T) {
@@ -357,7 +356,7 @@ func TestVerifyRefreshToken_AbsoluteExpWithLeeway(t *testing.T) {
 	mgr := NewManager(cfg)
 	ctx := context.Background()
 
-	// abs_exp 刚过期，但在 leeway 范围内
+	// abs_exp 刚過期，但在 leeway 范围内
 	absExp := time.Now().Add(-10 * time.Second)
 	params := SignRefreshParams{
 		UserID:      "user-123",
@@ -394,7 +393,7 @@ func TestPolicyOf_InvalidClient(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := mgr.PolicyOf(ctx, "unknown-client")
-	assert.True(t, errors.Is(err, apperr.ErrInvalidClient))
+	assert.True(t, errors.Is(err, ErrInvalidClient))
 }
 
 func TestVerifyAccessToken_InvalidSecret(t *testing.T) {
@@ -414,13 +413,13 @@ func TestVerifyAccessToken_InvalidSecret(t *testing.T) {
 	token, err := mgr.SignAccess(ctx, params)
 	require.NoError(t, err)
 
-	// 用错误的 secret 验证
+	// 用錯誤的 secret 驗證
 	wrongCfg := newTestConfig()
 	wrongCfg.Secret = "wrong-secret-must-be-at-least-32-chars-long"
 	wrongMgr := NewManager(wrongCfg)
 
 	_, err = wrongMgr.VerifyAccess(ctx, token)
-	assert.True(t, errors.Is(err, apperr.ErrInvalidToken))
+	assert.True(t, errors.Is(err, ErrInvalidToken))
 }
 
 func TestVerifyRefreshToken_InvalidSecret(t *testing.T) {
@@ -441,22 +440,22 @@ func TestVerifyRefreshToken_InvalidSecret(t *testing.T) {
 	token, err := mgr.SignRefresh(ctx, params)
 	require.NoError(t, err)
 
-	// 用错误的 refresh secret 验证
+	// 用錯誤的 refresh secret 驗證
 	wrongCfg := newTestConfig()
 	wrongCfg.RefreshSecret = "wrong-refresh-secret-must-be-32-chars"
 	wrongMgr := NewManager(wrongCfg)
 
 	_, err = wrongMgr.VerifyRefresh(ctx, token)
-	assert.True(t, errors.Is(err, apperr.ErrInvalidToken))
+	assert.True(t, errors.Is(err, ErrInvalidToken))
 }
 
 func TestVerifyAccessToken_SigningMethodCheck(t *testing.T) {
-	// 确保在 keyfunc 中检查 alg（早期拒绝）
+	// 确保在 keyfunc 中檢查 alg（早期拒绝）
 	cfg := newTestConfig()
 	mgr := NewManager(cfg)
 	ctx := context.Background()
 
-	// 创建 HS512 的令牌（不同算法）
+	// 建立 HS512 的令牌（不同算法）
 	claims := &AccessClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   "user-123",
@@ -477,7 +476,7 @@ func TestVerifyAccessToken_SigningMethodCheck(t *testing.T) {
 
 	// 应当拒绝（不是 HS256）
 	_, verifyErr := mgr.VerifyAccess(ctx, tokenString)
-	assert.True(t, errors.Is(verifyErr, apperr.ErrInvalidToken))
+	assert.True(t, errors.Is(verifyErr, ErrInvalidToken))
 }
 
 // Helper function

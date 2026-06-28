@@ -43,30 +43,30 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 	defer cancel()
 
 	status := gin.H{
-		"database":              "ok",
-		"redis":                 "ok",
-		"family_store_scripts":  "ok",
+		"database":             "ok",
+		"redis":                "ok",
+		"family_store_scripts": "ok",
 	}
 	healthy := true
 
 	// 檢查 database
 	sqlDB, err := h.db.DB()
 	if err != nil || sqlDB.PingContext(ctx) != nil {
-		status["database"] = "error"
+		status["database"] = "unhealthy"
 		healthy = false
 	}
 
 	// 檢查 Redis（若已設定）
 	if h.redisClient != nil {
 		if err := h.redisClient.Ping(ctx).Err(); err != nil {
-			status["redis"] = "error"
+			status["redis"] = "unhealthy"
 			healthy = false
 		}
 	}
 
 	// 檢查 FamilyStore Lua 腳本（若已設定）
 	if h.familyReady != nil && !h.familyReady() {
-		status["family_store_scripts"] = "error"
+		status["family_store_scripts"] = "unhealthy"
 		healthy = false
 	}
 

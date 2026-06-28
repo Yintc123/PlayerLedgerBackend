@@ -9,7 +9,7 @@ func SetClaims(c *gin.Context, claims *AccessClaims) {
 	c.Set(claimsCtxKey, claims)
 }
 
-// GetClaims 从 gin.Context 获取 claims。
+// GetClaims 从 gin.Context 取得 claims。
 func GetClaims(c *gin.Context) (*AccessClaims, bool) {
 	v, ok := c.Get(claimsCtxKey)
 	if !ok {

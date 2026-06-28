@@ -93,10 +93,12 @@ type authService struct {
 	blacklist   redis.AccessTokenBlacklist
 	audit       audit.Logger
 	accessTTL   time.Duration // JWT_ACCESS_TTL，固定 access token 有效期（§8.2）
+	graceWindow time.Duration // JWT_GRACE_WINDOW；Refresh rotation 重送容忍窗（§8.2.1）
 }
 
 // NewAuthService 建立認證服務（§8.9）。
 // accessTTL 由 cfg.JWT.AccessTTL 傳入，確保 access token 永遠使用固定 TTL（§8.2）。
+// graceWindow 由 cfg.JWT.GraceWindow 傳入；用於 FamilyStore.Rotate 重放偵測窗口（§8.2.1）。
 func NewAuthService(
 	cmsUserRepo repository.CMSUserRepository,
 	memberRepo repository.MemberRepository,
@@ -106,6 +108,7 @@ func NewAuthService(
 	blacklist redis.AccessTokenBlacklist,
 	auditLogger audit.Logger,
 	accessTTL time.Duration,
+	graceWindow time.Duration,
 ) AuthService {
 	return &authService{
 		cmsUserRepo: cmsUserRepo,
@@ -116,6 +119,7 @@ func NewAuthService(
 		blacklist:   blacklist,
 		audit:       auditLogger,
 		accessTTL:   accessTTL,
+		graceWindow: graceWindow,
 	}
 }
 
@@ -180,11 +184,31 @@ func (s *authService) Register(ctx context.Context, in RegisterInput) error {
 	return nil
 }
 
+// transitJWTError 將 pkg/jwt 的 sentinel error 轉譯為 internal/apperr 的 domain error。
+// 對應 §2.1 依賴方向：pkg/jwt 不能 import internal/apperr，由 service 層做轉譯
+// （與 §8.3.2 hasher.ErrMismatch → apperr.ErrUnauthorized 同個 pattern）。
+func transitJWTError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, jwt.ErrTokenExpired):
+		return apperr.ErrTokenExpired
+	case errors.Is(err, jwt.ErrAbsoluteExpired):
+		return apperr.ErrAbsoluteExpired
+	case errors.Is(err, jwt.ErrInvalidToken):
+		return apperr.ErrInvalidToken
+	case errors.Is(err, jwt.ErrInvalidClient):
+		return apperr.ErrInvalidClient
+	default:
+		return err
+	}
+}
+
 // Login 登入：依 client_id 路由，驗帳密 → 開新 family → 簽 token pair（§8.9）。
 func (s *authService) Login(ctx context.Context, in LoginInput) (*TokenPair, error) {
 	policy, err := s.jwtManager.PolicyOf(ctx, in.ClientID)
 	if err != nil {
-		return nil, apperr.ErrInvalidClient
+		return nil, transitJWTError(err)
 	}
 
 	now := time.Now()
@@ -329,7 +353,7 @@ func (s *authService) Login(ctx context.Context, in LoginInput) (*TokenPair, err
 func (s *authService) Refresh(ctx context.Context, in RefreshInput) (*TokenPair, error) {
 	claims, err := s.jwtManager.VerifyRefresh(ctx, in.RefreshToken)
 	if err != nil {
-		return nil, err
+		return nil, transitJWTError(err)
 	}
 
 	userID := claims.UserID()
@@ -340,10 +364,13 @@ func (s *authService) Refresh(ctx context.Context, in RefreshInput) (*TokenPair,
 
 	policy, err := s.jwtManager.PolicyOf(ctx, clientID)
 	if err != nil {
-		return nil, err
+		return nil, transitJWTError(err)
 	}
 
-	result, state, err := s.familyStore.Rotate(ctx, userID, fid, presentedJTI, newJTI, policy.RefreshTTL)
+	// 第 6 參數是 grace window（重送容忍窗，秒級），**不是** RefreshTTL（小時/天）；
+	// 傳錯會導致被盜 token 在數小時/天內反覆觸發 GraceHit 而不被偵測為 replay，
+	// 完全破壞 §8.2.1 重放偵測模型（v1.9 前的安全 bug，已修）。
+	result, state, err := s.familyStore.Rotate(ctx, userID, fid, presentedJTI, newJTI, s.graceWindow)
 	if err != nil {
 		logger.L().Error("family rotate failed", zap.Error(err))
 		return nil, fmt.Errorf("rotate family: %w", err)
@@ -431,7 +458,7 @@ func (s *authService) Logout(ctx context.Context, in LogoutInput) error {
 	if in.RefreshToken != "" {
 		claims, err := s.jwtManager.VerifyRefresh(ctx, in.RefreshToken)
 		if err != nil {
-			return apperr.ErrInvalidToken
+			return transitJWTError(err)
 		}
 		if claims.FamilyID != in.FamilyID {
 			return apperr.ErrInvalidInput

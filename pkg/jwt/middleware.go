@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yintengching/playerledger/internal/apperr"
 	"github.com/yintengching/playerledger/pkg/httpx"
 	"github.com/yintengching/playerledger/pkg/logger"
 	"github.com/yintengching/playerledger/pkg/metrics"
@@ -69,9 +68,9 @@ func AuthMiddleware(jwtManager Manager, blacklist AccessTokenBlacklist) gin.Hand
 		claims, err := jwtManager.VerifyAccess(c.Request.Context(), token)
 		var errCode string
 		if err != nil {
-			if errors.Is(err, apperr.ErrTokenExpired) {
+			if errors.Is(err, ErrTokenExpired) {
 				errCode = "token_expired"
-			} else if errors.Is(err, apperr.ErrInvalidToken) {
+			} else if errors.Is(err, ErrInvalidToken) {
 				errCode = "invalid_token"
 			} else {
 				errCode = "unauthorized"

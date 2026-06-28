@@ -11,7 +11,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// TestConnect_ValidDSN 验证 Connect 能成功使用有效 DSN 连接
+// TestConnect_ValidDSN 驗證 Connect 能成功使用有效 DSN 連線
 func TestConnect_ValidDSN_Success(t *testing.T) {
 	// 初始化日志（必须在 Connect 之前，因为 newGormLogger 依赖全局 logger）
 	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
@@ -34,15 +34,15 @@ func TestConnect_ValidDSN_Success(t *testing.T) {
 
 	db, err := Connect(cfg)
 	if err != nil {
-		// 如果测试环境没有 PostgreSQL，跳过测试而不是失败
+		// 如果測試環境没有 PostgreSQL，跳过測試而不是失败
 		t.Skipf("PostgreSQL not available: %v", err)
 	}
 	require.NotNil(t, db)
 
-	// 验证 *gorm.DB 不为 nil
+	// 驗證 *gorm.DB 不为 nil
 	assert.NotNil(t, db)
 
-	// 验证连接池配置已应用
+	// 驗證連線池配置已應用
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	assert.NotNil(t, sqlDB)
@@ -52,7 +52,7 @@ func TestConnect_ValidDSN_Success(t *testing.T) {
 	_ = sqlDB.Close()
 }
 
-// TestConnect_InvalidConfig 验证无效配置返回 error
+// TestConnect_InvalidConfig 驗證无效配置返回 error
 func TestConnect_InvalidConfig_ReturnsError(t *testing.T) {
 	// 初始化日志
 	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
@@ -74,7 +74,7 @@ func TestConnect_InvalidConfig_ReturnsError(t *testing.T) {
 	assert.Nil(t, db)
 }
 
-// TestConnect_DSN_ContainsConnectTimeout 验证 DSN 包含 connect_timeout
+// TestConnect_DSN_ContainsConnectTimeout 驗證 DSN 包含 connect_timeout
 func TestConnect_DSN_ContainsConnectTimeout(t *testing.T) {
 	cfg := config.DatabaseConfig{
 		Host:             "localhost",
@@ -91,7 +91,7 @@ func TestConnect_DSN_ContainsConnectTimeout(t *testing.T) {
 	assert.Contains(t, dsn, "connect_timeout=15")
 }
 
-// TestConnect_DSN_ContainsStatementTimeout 验证 DSN 包含 statement_timeout（毫秒）
+// TestConnect_DSN_ContainsStatementTimeout 驗證 DSN 包含 statement_timeout（毫秒）
 func TestConnect_DSN_ContainsStatementTimeout(t *testing.T) {
 	cfg := config.DatabaseConfig{
 		Host:             "localhost",
@@ -108,7 +108,7 @@ func TestConnect_DSN_ContainsStatementTimeout(t *testing.T) {
 	assert.Contains(t, dsn, "statement_timeout=10000") // 10s = 10000ms
 }
 
-// TestConnect_GormConfig_HasZapLogger 验证 GORM 配置使用 zapgorm2 logger
+// TestConnect_GormConfig_HasZapLogger 驗證 GORM 配置使用 zapgorm2 logger
 func TestConnect_GormConfig_HasZapLogger(t *testing.T) {
 	// 初始化日志
 	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
@@ -132,7 +132,7 @@ func TestConnect_GormConfig_HasZapLogger(t *testing.T) {
 	}
 	require.NotNil(t, db)
 
-	// 验证 GORM 实例的 logger 存在
+	// 驗證 GORM 實例的 logger 存在
 	assert.NotNil(t, db.Logger)
 
 	// 清理
@@ -141,7 +141,7 @@ func TestConnect_GormConfig_HasZapLogger(t *testing.T) {
 	}
 }
 
-// TestConnect_PrepareStmt_Configuration 验证 PrepareStmt 配置被正确应用
+// TestConnect_PrepareStmt_Configuration 驗證 PrepareStmt 配置被正确應用
 func TestConnect_PrepareStmt_Configuration(t *testing.T) {
 	// 初始化日志
 	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
@@ -175,7 +175,7 @@ func TestConnect_PrepareStmt_Configuration(t *testing.T) {
 			}
 			require.NotNil(t, db)
 
-			// 验证 PrepareStmt 配置被应用到 GORM config
+			// 驗證 PrepareStmt 配置被應用到 GORM config
 			assert.Equal(t, tt.prepareStmt, db.PrepareStmt)
 
 			// 清理
@@ -186,7 +186,7 @@ func TestConnect_PrepareStmt_Configuration(t *testing.T) {
 	}
 }
 
-// TestNewGormLogger_IntegratesZapLogger 验证 newGormLogger 正确集成 zap logger
+// TestNewGormLogger_IntegratesZapLogger 驗證 newGormLogger 正确集成 zap logger
 func TestNewGormLogger_IntegratesZapLogger(t *testing.T) {
 	// 初始化日志
 	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
@@ -194,11 +194,11 @@ func TestNewGormLogger_IntegratesZapLogger(t *testing.T) {
 
 	gormLogger := newGormLogger()
 
-	// 验证 logger 不为 nil
+	// 驗證 logger 不为 nil
 	assert.NotNil(t, gormLogger)
 }
 
-// TestLogger_Integration 验证 zap logger 与 GORM 的集成
+// TestLogger_Integration 驗證 zap logger 与 GORM 的集成
 func TestLogger_Integration_WithZap(t *testing.T) {
 	// 初始化日志
 	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
@@ -207,14 +207,14 @@ func TestLogger_Integration_WithZap(t *testing.T) {
 	l := logger.L()
 	assert.NotNil(t, l)
 
-	// 测试 logger 的基本功能
+	// 測試 logger 的基本功能
 	l.Info("test log from GORM integration",
 		zap.String("module", "database"),
 		zap.String("action", "test"),
 	)
 }
 
-// 辅助函数：从 config 构建 DSN（用于单元测试验证 DSN 格式）
+// 辅助函数：从 config 构建 DSN（用于单元測試驗證 DSN 格式）
 func buildDSN(cfg config.DatabaseConfig) string {
 	return formatDSN(cfg)
 }

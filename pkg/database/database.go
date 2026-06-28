@@ -11,18 +11,18 @@ import (
 	"moul.io/zapgorm2"
 )
 
-// Connect 建立 PostgreSQL 连接并返回 GORM 实例。
+// Connect 建立 PostgreSQL 連線并返回 GORM 實例。
 //
 // 根据规格书 §6.2，DSN 包含 connect_timeout 与 statement_timeout，
-// 避免慢查与卡死。连接池参数也由 config 控制。
+// 避免慢查与卡死。連線池参数也由 config 控制。
 //
-// 错误处理：连接失败返回 error，由 main 决定是否 fatal。
+// 錯誤处理：連線失败返回 error，由 main 决定是否 fatal。
 func Connect(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	dsn := formatDSN(cfg)
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		PrepareStmt: cfg.PrepareStmt, // 直连 PG = true；走 PgBouncer transaction mode 必须 false
-		Logger:      newGormLogger(),  // zapgorm2 包装全域 zap logger
+		Logger:      newGormLogger(),  // zapgorm2 包裝全域 zap logger
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gorm open: %w", err)
@@ -65,15 +65,15 @@ func formatDSN(cfg config.DatabaseConfig) string {
 
 // newGormLogger 整合 zap：将 GORM 内部日志转至全域 zap logger。
 //
-// 使用 zapgorm2 包装全域 logger，LogMode 设为 Warn，避免 INFO 级日志
-// 污染生产环境日志（verbose query log 仅在调试需要时启用）。
+// 使用 zapgorm2 包裝全域 logger，LogMode 设为 Warn，避免 INFO 级日志
+// 污染生产環境日志（verbose query log 仅在调试需要时启用）。
 //
 // 规格书 §5 / §6.2 要求日志通过 zapgorm2 转至全域 zap。
 func newGormLogger() gormlogger.Interface {
 	return zapgorm2.New(logger.L()).LogMode(gormlogger.Warn)
 }
 
-// Close 关闭数据库连接。
+// Close 關閉数据库連線。
 // 在 graceful shutdown 时调用（见 §14.2）。
 func Close(db *gorm.DB) error {
 	sqlDB, err := db.DB()

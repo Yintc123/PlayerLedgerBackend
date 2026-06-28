@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -143,16 +144,33 @@ func main() {
 	memberRepo := repository.NewMemberRepository(db)
 	bcryptHasher := hasher.NewBcryptHasher(cfg.JWT.BcryptCost)
 	blacklist := redis.NewAccessTokenBlacklist(redisClient)
+
+	// Seed super admin（取代規格 §13.5 原 SQL migration；改由 ADMIN_USERNAME/ADMIN_PASSWORD env 注入）
+	created, err := service.EnsureAdminFromConfig(
+		context.Background(),
+		cmsUserRepo, bcryptHasher,
+		cfg.Admin.Username, cfg.Admin.Password,
+	)
+	if err != nil {
+		log.Fatal("seed admin failed", zap.Error(err))
+	}
+	if created {
+		log.Info("super admin created", zap.String("username", cfg.Admin.Username))
+	} else if cfg.Admin.Username != "" {
+		log.Info("super admin already exists, skipping seed", zap.String("username", cfg.Admin.Username))
+	}
+
 	authService := service.NewAuthService(
 		cmsUserRepo, memberRepo, jwtManager, bcryptHasher,
 		familyStore, blacklist, auditLogger,
-		cfg.JWT.AccessTTL, // 固定 access token TTL（§8.2）
+		cfg.JWT.AccessTTL,   // 固定 access token TTL（§8.2）
+		cfg.JWT.GraceWindow, // Refresh rotation 重送容忍窗（§8.2.1）
 	)
 	log.Info("auth service initialized")
 
 	// ═══════════════════════════════════════════════════════
 	// 11. 建立 Gin Router & 中介層（§9.2）
-	// 順序：RequestID → GinRecovery → GinLogger → SecureHeaders → CORS → BodyLimit → Metrics
+	// 順序：RequestID → GinRecovery → GinLogger → SecureHeaders → CORS → MaxBodyBytes → Metrics
 	// ═══════════════════════════════════════════════════════
 	gin.SetMode(cfg.Server.GinMode)
 	router := gin.New()
@@ -175,7 +193,7 @@ func main() {
 			AllowCredentials: cfg.Server.AllowCredentials,
 			MaxAge:           12 * time.Hour,
 		}),
-		httpx.BodyLimit(cfg.Server.MaxRequestBody),
+		httpx.MaxBodyBytes(cfg.Server.MaxRequestBody),
 		metrics.GinMiddleware(),
 	)
 
@@ -232,7 +250,7 @@ func main() {
 
 	go func() {
 		log.Info("HTTP server listening", zap.String("addr", srv.Addr))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("HTTP server error", zap.Error(err))
 		}
 	}()

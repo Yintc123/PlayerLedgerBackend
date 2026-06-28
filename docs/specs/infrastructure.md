@@ -39,28 +39,32 @@
 
 ### 1.2 套件版本
 
-| 模組 | 套件 | 版本 | 說明 |
-|------|------|------|------|
-| HTTP 框架 | `gin-gonic/gin` | v1.10.x | 高效能 HTTP router，中介層生態完整 |
-| CORS | `gin-contrib/cors` | v1.7.x | Gin CORS middleware |
-| 安全標頭 | `unrolled/secure` | v1.16.x | HSTS / X-Content-Type-Options / X-Frame-Options |
-| ORM | `gorm.io/gorm` | v1.25.x | Go 主流 ORM，支援 migration、hooks、association |
-| GORM Zap 整合 | `moul.io/zapgorm2` | v1.3.x | 將 GORM 日誌接到全域 zap |
-| DB Driver | `gorm.io/driver/postgres` | v1.5.x | PostgreSQL driver |
-| DB Migration | `golang-migrate/migrate` | v4.18.x | 版本化 migration 腳本管理 |
-| Config | `spf13/viper` | v1.19.x | 多源設定載入，優先順序可控 |
-| Logging | `uber-go/zap` | v1.27.x | 結構化日誌，效能卓越 |
-| Metrics | `prometheus/client_golang` | v1.20.x | Prometheus exporter |
-| JWT | `golang-jwt/jwt` | v5.2.x | 業界標準（本階段用 HS256，未來多服務時升級 RS256） |
-| Bcrypt | `golang.org/x/crypto` | v0.27.x | 密碼雜湊 |
-| Redis | `redis/go-redis` | v9.6.x | 官方 client，Pipeline / Pub-Sub / Cluster 支援 |
-| Rate Limiting | `ulule/limiter` | v3.11.x | 支援 Redis 分散式限流 |
-| Validation | `go-playground/validator` | v10.22.x | struct tag 驗證，Gin 內建整合 |
-| UUID | `google/uuid` | v1.6.x | UUID v4 產生 |
-| User-Agent 解析 | `mileusna/useragent` | v1.3.x | 解析 UA → device label（family metadata 顯示用） |
-| Test 斷言 | `testify/assert` + `testify/require` | v1.9.x | 斷言函式庫 |
-| Test 容器 | `testcontainers-go` | v0.33.x | Integration test 動態啟動容器（可選方案，見 §19） |
-| Schema 驗證 | `getkin/kin-openapi` | v0.127.x | E2E test 驗證 response 是否符合 OpenAPI |
+> **版本策略**：欄位列的版本為**最低相容版本**（semver minor 視為相容），不是鎖死版本；
+> 跟隨 dependabot 升 minor / patch 即可，跨 major 才需評估 breaking changes。
+> CI 以 `go.mod` 為單一真實來源；表格僅作初始選型參考。
+
+| 模組 | 套件 | 最低版本 | 說明 |
+|------|------|----------|------|
+| HTTP 框架 | `gin-gonic/gin` | ≥ v1.10 | 高效能 HTTP router，中介層生態完整 |
+| CORS | `gin-contrib/cors` | ≥ v1.7 | Gin CORS middleware |
+| 安全標頭 | `unrolled/secure` | ≥ v1.16 | HSTS / X-Content-Type-Options / X-Frame-Options |
+| ORM | `gorm.io/gorm` | ≥ v1.25 | Go 主流 ORM，支援 migration、hooks、association |
+| GORM Zap 整合 | `moul.io/zapgorm2` | ≥ v1.3 | 將 GORM 日誌接到全域 zap |
+| DB Driver | `gorm.io/driver/postgres` | ≥ v1.5 | PostgreSQL driver |
+| DB Migration | `golang-migrate/migrate` | ≥ v4.18 | 版本化 migration 腳本管理 |
+| Config | `spf13/viper` | ≥ v1.19 | 多源設定載入，優先順序可控 |
+| Logging | `uber-go/zap` | ≥ v1.27 | 結構化日誌，效能卓越 |
+| Metrics | `prometheus/client_golang` | ≥ v1.20 | Prometheus exporter |
+| JWT | `golang-jwt/jwt` | ≥ v5.2 | 業界標準（本階段用 HS256，未來多服務時升級 RS256） |
+| Bcrypt | `golang.org/x/crypto` | ≥ v0.27 | 密碼雜湊 |
+| Redis | `redis/go-redis` | ≥ v9.6 | 官方 client，Pipeline / Pub-Sub / Cluster 支援 |
+| Rate Limiting | `ulule/limiter` | ≥ v3.11 | 支援 Redis 分散式限流 |
+| Validation | `go-playground/validator` | ≥ v10.22 | struct tag 驗證，Gin 內建整合 |
+| UUID | `google/uuid` | ≥ v1.6 | UUID v4 產生 |
+| User-Agent 解析 | `mileusna/useragent` | ≥ v1.3 | 解析 UA → device label（family metadata 顯示用） |
+| Test 斷言 | `testify/assert` + `testify/require` | ≥ v1.9 | 斷言函式庫 |
+| Test 容器 | `testcontainers-go` | ≥ v0.33 | Integration test 動態啟動容器（CI 用，見 §19） |
+| Schema 驗證 | `getkin/kin-openapi` | ≥ v0.127 | E2E test / CI 驗證 OpenAPI 文件結構 |
 
 > **為何選 GORM 而非 ent / sqlc？** 詳見 ADR-001。
 > GORM 上手成本低，適合本階段快速迭代；複雜查詢可搭配 `db.Raw()` 使用原生 SQL。
@@ -113,6 +117,7 @@ PlayerLedgerBackend/
 │   ├── ratelimit/               # Rate limiting middleware（IP + User 兩層）
 │   ├── metrics/                 # Prometheus exporter 與 middleware
 │   ├── audit/                   # Audit logger（獨立 zap instance）
+│   ├── ua/                      # User-Agent parser（mileusna/useragent 封裝；§7.4 FamilyState.DeviceLabel 用）
 │   └── httpx/                   # 共用 HTTP 中介層與 helper
 │       ├── body_limit.go        # MaxBodyBytes
 │       ├── secure_headers.go    # SecureHeaders（依 APP_ENV 切 HSTS）
@@ -123,9 +128,8 @@ PlayerLedgerBackend/
 │   ├── 000001_create_cms_users.up.sql      # auth 必需，見 §13.5
 │   ├── 000001_create_cms_users.down.sql
 │   ├── 000002_create_members.up.sql
-│   ├── 000002_create_members.down.sql
-│   ├── 000003_seed_initial_admin.up.sql    # dev/demo only，prod 須改密碼
-│   └── 000003_seed_initial_admin.down.sql
+│   └── 000002_create_members.down.sql
+│   # 註：admin 不再用 SQL seed；改由 ADMIN_USERNAME/ADMIN_PASSWORD env + service.EnsureAdminFromConfig 注入（§13.5）
 ├── schema/                      # OpenAPI 3.1 契約（SDD 唯一真實來源）
 │   ├── openapi.yaml             # 主 schema 檔
 │   └── components/              # 共用 schema 元件
@@ -778,15 +782,26 @@ func Load() (*Config, error) {
     v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
     v.AutomaticEnv()
 
+    // 4.1 顯式 BindEnv（**必要**，Viper 已知限制）
+    //    AutomaticEnv() 在 Unmarshal() 時不會自動讀環境變數（只在 Get*() 系列生效），
+    //    必須對每個 key 呼叫 BindEnv 才能讓 Unmarshal 路徑感知到 env 注入的值。
+    //    所有 mapstructure key 集中在 bindEnvVars(v) 顯式宣告（保持單一來源）。
+    bindEnvVars(v)
+
     // 5. Unmarshal + struct tag 驗證
+    //    intSecondsToTimeDurationHookFunc 先攔截純整數（.env 慣例：所有 duration 用秒）；
+    //    StringToTimeDurationHookFunc 接手帶單位字串（"15m"），供 YAML 設定檔使用。
     var cfg Config
     if err := v.Unmarshal(&cfg, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+        intSecondsToTimeDurationHookFunc(),
         mapstructure.StringToTimeDurationHookFunc(),
         mapstructure.StringToSliceHookFunc(","),
     ))); err != nil {
         return nil, fmt.Errorf("unmarshal config: %w", err)
     }
-    if err := validator.New().Struct(&cfg); err != nil {
+    // NewValidator() 是專案共用的 validator instance（封裝 validator.New() + 自訂 tag
+    // 註冊），避免每處呼叫各自重複設定；tests 也共用同一份規則。
+    if err := NewValidator().Struct(&cfg); err != nil {
         return nil, fmt.Errorf("validate config: %w", err)
     }
     // 6. 跨欄位驗證
@@ -796,47 +811,77 @@ func Load() (*Config, error) {
     return &cfg, nil
 }
 
+// duration 慣例：所有 duration 預設值與 .env 值一律用整數秒（不帶單位）。
+// intSecondsToTimeDurationHookFunc decode hook 負責將整數轉為 time.Duration。
+// YAML 設定檔仍可使用帶單位字串（"15m"），由 StringToTimeDurationHookFunc 接手。
 func setDefaults(v *viper.Viper) {
     v.SetDefault("APP_ENV", "dev")
     v.SetDefault("GIN_MODE", "release")
-    v.SetDefault("SHUTDOWN_TIMEOUT", "10s")
-    v.SetDefault("READ_HEADER_TIMEOUT", "10s")
-    v.SetDefault("READ_TIMEOUT", "30s")
-    v.SetDefault("WRITE_TIMEOUT", "30s")
-    v.SetDefault("IDLE_TIMEOUT", "120s")
+    v.SetDefault("SHUTDOWN_TIMEOUT", 10)
+    v.SetDefault("READ_HEADER_TIMEOUT", 10)
+    v.SetDefault("READ_TIMEOUT", 30)
+    v.SetDefault("WRITE_TIMEOUT", 30)
+    v.SetDefault("IDLE_TIMEOUT", 120)
     v.SetDefault("MAX_REQUEST_BODY", 1<<20) // 1MB
     v.SetDefault("DB_PORT", 5432)
     v.SetDefault("DB_SSLMODE", "disable")
     v.SetDefault("DB_MAX_OPEN_CONNS", 25)
     v.SetDefault("DB_MAX_IDLE_CONNS", 5)
-    v.SetDefault("DB_CONN_MAX_LIFETIME", "5m")
-    v.SetDefault("DB_CONNECT_TIMEOUT", "5s")
-    v.SetDefault("DB_STATEMENT_TIMEOUT", "10s")
+    v.SetDefault("DB_CONN_MAX_LIFETIME", 300)  // 5m
+    v.SetDefault("DB_CONNECT_TIMEOUT", 5)
+    v.SetDefault("DB_STATEMENT_TIMEOUT", 10)
     v.SetDefault("DB_PREPARE_STMT", true)
     v.SetDefault("REDIS_PORT", 6379)
-    v.SetDefault("REDIS_DIAL_TIMEOUT", "5s")
-    v.SetDefault("REDIS_READ_TIMEOUT", "3s")
-    v.SetDefault("REDIS_WRITE_TIMEOUT", "3s")
+    v.SetDefault("REDIS_DIAL_TIMEOUT", 5)
+    v.SetDefault("REDIS_READ_TIMEOUT", 3)
+    v.SetDefault("REDIS_WRITE_TIMEOUT", 3)
     v.SetDefault("REDIS_POOL_SIZE", 10)
     v.SetDefault("JWT_ISSUER", "playerledger")
-    v.SetDefault("JWT_ACCESS_TTL", "15m")
-    v.SetDefault("JWT_GRACE_WINDOW", "10s")
-    v.SetDefault("JWT_CLOCK_SKEW_LEEWAY", "30s")
+    v.SetDefault("JWT_ACCESS_TTL", 900)   // 15m
+    v.SetDefault("JWT_GRACE_WINDOW", 10)
+    v.SetDefault("JWT_CLOCK_SKEW_LEEWAY", 30)
     // ClientPolicies 預設值。
     // mapstructure key 用 "." / "-"（給 viper 解析巢狀 map 與保留原始 client_id 字面值）；
     // shell env 對應名稱為 JWT_CLIENT_POLICIES_<CLIENT_ID>_REFRESH_TTL 等（"." / "-" → "_"）。
-    v.SetDefault("JWT_CLIENT_POLICIES.cms-web.REFRESH_TTL", "1h")
-    v.SetDefault("JWT_CLIENT_POLICIES.cms-web.ABSOLUTE_TTL", "8h")
-    v.SetDefault("JWT_CLIENT_POLICIES.public-web.REFRESH_TTL", "1h")
-    v.SetDefault("JWT_CLIENT_POLICIES.public-web.ABSOLUTE_TTL", "24h")
-    v.SetDefault("JWT_CLIENT_POLICIES.ios-app.REFRESH_TTL", "720h")     // 30d
-    v.SetDefault("JWT_CLIENT_POLICIES.ios-app.ABSOLUTE_TTL", "4320h")   // 180d
-    v.SetDefault("JWT_CLIENT_POLICIES.android-app.REFRESH_TTL", "720h")
-    v.SetDefault("JWT_CLIENT_POLICIES.android-app.ABSOLUTE_TTL", "4320h")
+    v.SetDefault("JWT_CLIENT_POLICIES.cms-web.REFRESH_TTL", 3600)     // 1h
+    v.SetDefault("JWT_CLIENT_POLICIES.cms-web.ABSOLUTE_TTL", 28800)   // 8h
+    v.SetDefault("JWT_CLIENT_POLICIES.public-web.REFRESH_TTL", 3600)
+    v.SetDefault("JWT_CLIENT_POLICIES.public-web.ABSOLUTE_TTL", 86400)   // 24h
+    v.SetDefault("JWT_CLIENT_POLICIES.ios-app.REFRESH_TTL", 2592000)     // 720h = 30d
+    v.SetDefault("JWT_CLIENT_POLICIES.ios-app.ABSOLUTE_TTL", 15552000)   // 4320h = 180d
+    v.SetDefault("JWT_CLIENT_POLICIES.android-app.REFRESH_TTL", 2592000)
+    v.SetDefault("JWT_CLIENT_POLICIES.android-app.ABSOLUTE_TTL", 15552000)
     v.SetDefault("BCRYPT_COST", 12)
     v.SetDefault("LOG_LEVEL", "info")
     v.SetDefault("LOG_FORMAT", "json")
     v.SetDefault("METRICS_PATH", "/metrics")
+}
+
+// intSecondsToTimeDurationHookFunc converts bare integer values (and plain integer
+// strings as written in .env) to time.Duration by treating them as seconds.
+// Strings with unit suffixes ("15m", "10s") are passed through unchanged for
+// StringToTimeDurationHookFunc to handle.
+func intSecondsToTimeDurationHookFunc() mapstructure.DecodeHookFuncType {
+    return func(from reflect.Type, to reflect.Type, data interface{}) (interface{}, error) {
+        if to != reflect.TypeOf(time.Duration(0)) {
+            return data, nil
+        }
+        switch v := data.(type) {
+        case string:
+            n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+            if err != nil {
+                return data, nil
+            }
+            return time.Duration(n) * time.Second, nil
+        case int:
+            return time.Duration(v) * time.Second, nil
+        case int64:
+            return time.Duration(v) * time.Second, nil
+        case float64:
+            return time.Duration(int64(v)) * time.Second, nil
+        }
+        return data, nil
+    }
 }
 ```
 
@@ -1785,10 +1830,17 @@ func (u UserType) IsValid() bool {
 //   1. 從 Authorization header 取 "Bearer <token>"
 //      - 規範化：去除前後空白；prefix 比對「Bearer 」case-insensitive，僅接受單一空白
 //      - header 缺 / 前綴錯 / token 部分為空 → 401 `unauthorized`
-//   2. jwtManager.VerifyAccess(token) — 依錯誤 sentinel 對應 HTTP error code：
-//      - ErrTokenExpired                       → 401 `token_expired`   （前端 retry refresh）
-//      - ErrInvalidToken（含 alg/iss/aud/簽章/nbf/iat）→ 401 `invalid_token`   （前端走 login）
-//      - 其他不預期 error                       → 401 `unauthorized`
+//   2. jwtManager.VerifyAccess(token) — 依 pkg/jwt sentinel 對應 HTTP error code：
+//      - jwt.ErrTokenExpired                       → 401 `token_expired`   （前端 retry refresh）
+//      - jwt.ErrInvalidToken（含 alg/iss/aud/簽章/nbf/iat）→ 401 `invalid_token`   （前端走 login）
+//      - 其他不預期 error                          → 401 `unauthorized`
+//
+//      ⚠️ 為何 pkg/jwt 不直接回 apperr.ErrXxx：§2.1 禁止 pkg/* → internal/* 依賴。
+//      pkg/jwt 定義自己的 sentinel（jwt.ErrTokenExpired / jwt.ErrInvalidToken /
+//      jwt.ErrAbsoluteExpired / jwt.ErrInvalidClient）；service 層用 errors.Is
+//      轉譯為 internal/apperr 的 domain error（與 §8.3.2 hasher.ErrMismatch →
+//      apperr.ErrUnauthorized 的 pattern 對稱，見 service/auth_service.transitJWTError）。
+//      middleware 直接寫 HTTP error code，不過 apperr 一層。
 //   3. blacklist.IsBlacklisted(ctx, claims.ID):
 //      - (true, nil)  → 401 `session_revoked`（middleware 內直接寫 error code，不過 HandleError；見 §12.4）
 //      - (false, nil) → 通過
@@ -2099,7 +2151,7 @@ if err := r.SetTrustedProxies(cfg.Server.TrustedProxies); err != nil {
 //   1. RequestID 第一個 — 後續所有 layer 才能讀到 ID
 //   2. Recovery 緊接其後 — 最大化 panic 覆蓋（包含 Logger 自己 panic）
 //   3. Logger 在 Recovery 之後 — access log 已能讀到 ID
-//   4. SecureHeaders / CORS / BodyLimit — 對所有路由生效
+//   4. SecureHeaders / CORS / MaxBodyBytes — 對所有路由生效
 //   5. Metrics — 排最後，c.FullPath() 已就緒
 //
 // 注意：`Retry-After` 必須在 CORS ExposeHeaders 列出，否則跨域場景下
@@ -2904,44 +2956,50 @@ CREATE UNIQUE INDEX uq_members_username ON members(username) WHERE deleted_at IS
 DROP TABLE IF EXISTS members;
 ```
 
-#### Seed initial admin（dev / demo only）
+#### Seed initial admin（由 .env 注入，非 SQL migration）
 
-雞生蛋問題：CMS 自註冊預設 role 為 `user`，沒有任何路徑能產生第一個 `admin`，故 dev/demo 透過 migration seed 預埋一個。**production 部署前必須改密碼或刪此 seed migration**（見下方規範）。
+雞生蛋問題：CMS 自註冊預設 role 為 `user`，沒有任何路徑能產生第一個 `admin`。
 
-```sql
--- migrations/000003_seed_initial_admin.up.sql
--- 預設帳密：admin / admin123（DEMO ONLY；prod 部署前見 §13.5 末段「Prod 部署前必做」）。
--- password_hash 為 bcrypt(admin123, cost=10) 的輸出；每次重算 salt 不同，hash 不同。
--- 重算方法（任選其一）：
---   htpasswd -bnBC 10 "" admin123 | tr -d ':\n'
---   Go: bcrypt.GenerateFromPassword([]byte("admin123"), 10)
---
--- NOT EXISTS 子查詢保 idempotent — 手動重跑或多副本同時啟動都只會插入一次。
-INSERT INTO cms_users (username, password_hash, role)
-SELECT 'admin', '$2a$10$REPLACE_WITH_BCRYPT_HASH_OF_admin123', 'admin'
-WHERE NOT EXISTS (
-    SELECT 1 FROM cms_users WHERE username = 'admin' AND deleted_at IS NULL
-);
+**v1.11 起改用 env 配置 + 應用層 idempotent seed**（取代原 SQL migration `000003_seed_initial_admin`）；
+避免把任何形式的密碼或 placeholder 寫進版控的 migration SQL。
 
--- migrations/000003_seed_initial_admin.down.sql
-DELETE FROM cms_users WHERE username = 'admin';
+```bash
+# .env / .env.example
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-me-min-12-chars-strong-pw
 ```
 
-> **為何 bcrypt cost 固定 10，不從 `JWT_BCRYPT_COST` 取**：
-> Migration SQL 在 application boot 之前（甚至可能由獨立 CLI）執行，讀不到應用 config；且 seed hash 寫死後就無法因環境改而重算。一律用 cost=10（業界 default），對 demo 帳號的成本可忽略。後續 application 透過 `Hasher` 寫入的密碼仍走 `JWTConfig.BcryptCost` 配置。
+對應 `config.AdminConfig`（§4.2）。Validate() 跨欄位規則：
+- 兩欄同時留空 → 跳過 seed（dev 友善，無 admin 即可開機探索）
+- 任一非空 → 兩個都必填、密碼 ≥ 12 字元
+- `APP_ENV=prod` → 兩欄都必填（避免 prod 上線忘了設）
 
-> **為何用 `NOT EXISTS` 而非 `ON CONFLICT ... DO NOTHING`**：
-> PostgreSQL 支援 partial unique index 的 ON CONFLICT，但 predicate 必須與 index 的 `WHERE` 完全匹配；`NOT EXISTS` 子查詢可讀性更高、與索引解耦，partial unique index 改動時不會默默壞掉。
+啟動流程（`cmd/server/main.go` 在 repository 建立後、HTTP server 啟動前呼叫）：
 
-#### Prod 部署前必做
+```go
+// internal/service/admin_seed.go
+//
+// 行為：
+//   - 帳號不存在 → bcrypt(password) → 建立（role=admin）
+//   - 帳號已存在 → log info「skipping」，**不主動覆寫密碼**
+//     （避免無聲改密碼造成稽核盲點；旋密走 CMS API 或 ops 手動 update）
+//
+// 多副本同時啟動：第二個 instance 會看到帳號已存在 → 跳過，天然 idempotent。
+func EnsureAdminFromConfig(
+    ctx context.Context,
+    repo repository.CMSUserRepository,
+    h hasher.Hasher,
+    username, password string,
+) (created bool, err error)
+```
 
-| 步驟 | 動作 |
-|---|---|
-| 1 | 在 CI 或 prod build pipeline 內，把 `000003_seed_initial_admin.up.sql` 內的 `admin123` hash 替換為真實 bcrypt 輸出，或直接刪除此 migration 改用手動 `INSERT` |
-| 2 | 若已部署過 demo seed，prod 第一次啟動前用 `UPDATE cms_users SET password_hash = '<new_bcrypt>' WHERE username = 'admin';` 改密碼 |
-| 3 | 任一方式都必須在第一次 prod 對外開放前完成，否則 `admin / admin123` 會出現在 prod |
+> **為何不用 SQL seed migration**：
+> - SQL migration 的密碼欄位避不開「寫死進版控」或「placeholder + CI guard」兩種次優解。
+> - 應用層 seed 讓密碼留在 env / secret manager（k8s Secret / Vault），與其他敏感配置同一處理管道。
+> - bcrypt cost 直接走 `JWTConfig.BcryptCost`，與後續 CMS 註冊使用者一致；無需「migration 用 cost=10，runtime 用 cost=12」的特例。
 
-> **CI 守門建議**：在 `lint` job 加一個 grep 規則 — 若 prod build 仍含 `REPLACE_WITH_BCRYPT_HASH_OF_admin123` placeholder 則 fail，避免忘記替換。
+> **為何不主動覆寫已存在 admin 的密碼**：
+> 在啟動時無聲覆寫會造成兩個問題：(1) 任何重啟都可能改密碼，運維難以追蹤；(2) audit log 缺少「誰改了密碼」紀錄（不像走 CMS API 有 actor）。改密碼一律走 CMS API 或運維手動 SQL，留下稽核軌跡。
 
 ---
 

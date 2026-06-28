@@ -15,7 +15,7 @@ func ParseDeviceLabel(userAgentStr string) string {
 
 	ua := useragent.Parse(userAgentStr)
 
-	// 获取浏览器和操作系统信息
+	// 取得浏览器和操作系统信息
 	browser := ua.Name
 	os := ua.OS
 

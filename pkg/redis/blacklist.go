@@ -7,11 +7,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// AccessTokenBlacklist 定义访问令牌黑名单接口。
-// 用于强制踢人场景，日常验证不走黑名单（stateless）。
+// AccessTokenBlacklist 定义存取令牌黑名单接口。
+// 用于强制踢人场景，日常驗證不走黑名单（stateless）。
 type AccessTokenBlacklist interface {
 	// Add 将 jti 加入黑名单，存活 ttl 秒。
-	// ttl ≤ 0 时 no-op（token 已自然过期）。
+	// ttl ≤ 0 时 no-op（token 已自然過期）。
 	// Redis 写入失败返回 error，caller 应 log + metric 但不影响关键步骤。
 	Add(ctx context.Context, jti string, ttl time.Duration) error
 
@@ -27,12 +27,12 @@ type accessTokenBlacklist struct {
 	client *redis.Client
 }
 
-// NewAccessTokenBlacklist 创建黑名单实例。
+// NewAccessTokenBlacklist 建立黑名单實例。
 func NewAccessTokenBlacklist(client *redis.Client) AccessTokenBlacklist {
 	return &accessTokenBlacklist{client: client}
 }
 
-// Add 实现 AccessTokenBlacklist.Add。
+// Add 實作 AccessTokenBlacklist.Add。
 // 使用 SETEX：key=auth:blacklist:<jti>，value=1，expiry=ttl。
 func (b *accessTokenBlacklist) Add(ctx context.Context, jti string, ttl time.Duration) error {
 	if ttl <= 0 {
@@ -46,7 +46,7 @@ func (b *accessTokenBlacklist) Add(ctx context.Context, jti string, ttl time.Dur
 	return nil
 }
 
-// IsBlacklisted 实现 AccessTokenBlacklist.IsBlacklisted。
+// IsBlacklisted 實作 AccessTokenBlacklist.IsBlacklisted。
 // 使用 EXISTS：存在返回 true，不存在返回 false。
 func (b *accessTokenBlacklist) IsBlacklisted(ctx context.Context, jti string) (bool, error) {
 	key := "auth:blacklist:" + jti

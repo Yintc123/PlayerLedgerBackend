@@ -8,8 +8,8 @@ import (
 	"github.com/yintengching/playerledger/config"
 )
 
-// Connect 建立 Redis 连接。
-// 根据规格书§7.2，包含连接参数、timeout、pool 配置。
+// Connect 建立 Redis 連線。
+// 根据规格书§7.2，包含連線参数、timeout、pool 配置。
 func Connect(cfg config.RedisConfig) (*redis.Client, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -31,7 +31,7 @@ func Connect(cfg config.RedisConfig) (*redis.Client, error) {
 	return client, nil
 }
 
-// Close 关闭 Redis 连接。
+// Close 關閉 Redis 連線。
 func Close(client *redis.Client) error {
 	return client.Close()
 }

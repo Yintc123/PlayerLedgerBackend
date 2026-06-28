@@ -9,7 +9,7 @@ import (
 )
 
 func TestLoad_WithEnvVars(t *testing.T) {
-	// 清空环境变量后设置最小必需值
+	// 清空環境变量后设置最小必需值
 	t.Setenv("APP_ENV", "dev")
 	t.Setenv("PORT", "8080")
 	t.Setenv("GIN_MODE", "debug")
@@ -160,7 +160,7 @@ func TestLoad_ClientPoliciesDefaults(t *testing.T) {
 }
 
 func TestLoad_MissingRequiredField(t *testing.T) {
-	// 不设置 PORT，使用 0 将导致验证失败
+	// 不设置 PORT，使用 0 将导致驗證失败
 	t.Setenv("APP_ENV", "dev")
 	t.Setenv("PORT", "0")
 	t.Setenv("GIN_MODE", "debug")

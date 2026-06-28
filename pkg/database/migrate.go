@@ -1,6 +1,7 @@
 package database
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -17,22 +18,22 @@ import (
 
 // migrationStatementTimeout 单一 migration statement 的上限。
 // 设较长（5 分钟）容纳大型 ALTER / CREATE INDEX；但有限以避免 deadlock 或
-// advisory lock 等待把整个 process 卡死，便于监控偵测异常。
+// advisory lock 等待把整个 process 卡死，便于監控偵测异常。
 const migrationStatementTimeout = 5 * time.Minute
 
-// RunMigrations 执行 embed.FS 内的 migration 脚本。
+// RunMigrations 執行 embed.FS 内的 migration 脚本。
 //
 // 根据规格书 §13.3，使用 golang-migrate + embed.FS 构造 migration source，
-// 连接到 PostgreSQL 数据库并执行 pending migrations。
+// 連線到 PostgreSQL 数据库并執行 pending migrations。
 //
 // 多 instance 同时启动时，golang-migrate 自动透过 PostgreSQL advisory lock
-// 序列化执行（见规格书 §13.1 注释）。
+// 序列化執行（见规格书 §13.1 注释）。
 //
-// 错误处理：
+// 錯誤处理：
 // - 构造 migration source 失败 → 回 error
-// - 连接数据库失败 → 回 error
-// - 执行 migration 失败 → 回 error（除 ErrNoChange 外）
-// - 关闭错误记 warn 但不回 error（cleanup 顺序问题）
+// - 連線数据库失败 → 回 error
+// - 執行 migration 失败 → 回 error（除 ErrNoChange 外）
+// - 關閉錯誤记 warn 但不回 error（cleanup 顺序问题）
 func RunMigrations(cfg config.DatabaseConfig) error {
 	// 从 embed.FS 构造 migration source
 	src, err := iofs.New(migrations.FS, ".")
@@ -52,14 +53,14 @@ func RunMigrations(cfg config.DatabaseConfig) error {
 		}.Encode(),
 	}
 
-	// 构造 migrate 实例
+	// 构造 migrate 實例
 	m, err := migrate.NewWithSourceInstance("iofs", src, dsnURL.String())
 	if err != nil {
 		// %w 会把 dsn 含密码一起写到 log；用 redactedDSN 取代
 		return fmt.Errorf("migrate new (dsn=%s): %w", redactedDSN(dsnURL), err)
 	}
 
-	// 延迟关闭：记录任何 cleanup 错误但不中断执行
+	// 延迟關閉：记录任何 cleanup 錯誤但不中断執行
 	defer func() {
 		srcErr, dbErr := m.Close()
 		if srcErr != nil {
@@ -70,8 +71,8 @@ func RunMigrations(cfg config.DatabaseConfig) error {
 		}
 	}()
 
-	// 执行 pending migrations
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	// 執行 pending migrations
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("migrate up: %w", err)
 	}
 

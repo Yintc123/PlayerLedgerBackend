@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newTestRedisClient 创建测试用 Redis client，从环境变量读取连接信息
+// newTestRedisClient 建立測試用 Redis client，从環境变量讀取連線信息
 func newTestRedisClient(t *testing.T) *redis.Client {
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
@@ -25,7 +25,7 @@ func newTestRedisClient(t *testing.T) *redis.Client {
 		Password: password,
 	})
 
-	// 测试连接是否成功
+	// 測試連線是否成功
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
@@ -35,12 +35,12 @@ func newTestRedisClient(t *testing.T) *redis.Client {
 	return client
 }
 
-// TestAccessTokenBlacklistAdd_ValidJTIAndTTL_SetexSucceeds 测试有效 JTI 和 TTL 成功写入
+// TestAccessTokenBlacklistAdd_ValidJTIAndTTL_SetexSucceeds 測試有效 JTI 和 TTL 成功写入
 func TestAccessTokenBlacklistAdd_ValidJTIAndTTL_SetexSucceeds(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
 
-	// 清理测试前后的 Redis 状态
+	// 清理測試前后的 Redis 状态
 	ctx := context.Background()
 	key := "auth:blacklist:test-jti-123"
 	_ = client.Del(ctx, key)
@@ -53,18 +53,18 @@ func TestAccessTokenBlacklistAdd_ValidJTIAndTTL_SetexSucceeds(t *testing.T) {
 	err := blacklist.Add(ctx, jti, ttl)
 	require.NoError(t, err, "Add should succeed with valid JTI and TTL")
 
-	// 验证 key 确实存在
+	// 驗證 key 确实存在
 	exists, err := client.Exists(ctx, key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), exists, "key should exist in Redis")
 
-	// 验证 value 是 "1"
+	// 驗證 value 是 "1"
 	val, err := client.Get(ctx, key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "1", val, "value should be '1'")
 }
 
-// TestAccessTokenBlacklistAdd_ZeroTTL_NoOp 测试 TTL≤0 时不写入（no-op）
+// TestAccessTokenBlacklistAdd_ZeroTTL_NoOp 測試 TTL≤0 时不写入（no-op）
 func TestAccessTokenBlacklistAdd_ZeroTTL_NoOp(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -81,13 +81,13 @@ func TestAccessTokenBlacklistAdd_ZeroTTL_NoOp(t *testing.T) {
 	err := blacklist.Add(ctx, jti, 0)
 	require.NoError(t, err, "Add with TTL=0 should return no error (no-op)")
 
-	// 验证 key 不存在
+	// 驗證 key 不存在
 	exists, err := client.Exists(ctx, key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), exists, "key should not exist (no-op for TTL≤0)")
 }
 
-// TestAccessTokenBlacklistAdd_NegativeTTL_NoOp 测试 TTL<0 时不写入
+// TestAccessTokenBlacklistAdd_NegativeTTL_NoOp 測試 TTL<0 时不写入
 func TestAccessTokenBlacklistAdd_NegativeTTL_NoOp(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -109,7 +109,7 @@ func TestAccessTokenBlacklistAdd_NegativeTTL_NoOp(t *testing.T) {
 	assert.Equal(t, int64(0), exists, "key should not exist (no-op for TTL<0)")
 }
 
-// TestAccessTokenBlacklistAdd_TTLExpiry_KeyEvicted 测试 TTL 到期后 key 自动过期
+// TestAccessTokenBlacklistAdd_TTLExpiry_KeyEvicted 測試 TTL 到期后 key 自动過期
 func TestAccessTokenBlacklistAdd_TTLExpiry_KeyEvicted(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -121,26 +121,26 @@ func TestAccessTokenBlacklistAdd_TTLExpiry_KeyEvicted(t *testing.T) {
 
 	blacklist := NewAccessTokenBlacklist(client)
 	jti := "test-expiry"
-	ttl := 500 * time.Millisecond // 短 TTL 便于测试
+	ttl := 500 * time.Millisecond // 短 TTL 便于測試
 
 	err := blacklist.Add(ctx, jti, ttl)
 	require.NoError(t, err)
 
-	// 立即验证存在
+	// 立即驗證存在
 	exists, err := client.Exists(ctx, key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), exists, "key should exist immediately after Add")
 
-	// 等待 TTL 过期
+	// 等待 TTL 過期
 	time.Sleep(600 * time.Millisecond)
 
-	// 验证已过期
+	// 驗證已過期
 	exists, err = client.Exists(ctx, key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), exists, "key should be evicted after TTL expires")
 }
 
-// TestAccessTokenBlacklistIsBlacklisted_KeyExists_ReturnsTrue 测试 key 存在时返回 true
+// TestAccessTokenBlacklistIsBlacklisted_KeyExists_ReturnsTrue 測試 key 存在时返回 true
 func TestAccessTokenBlacklistIsBlacklisted_KeyExists_ReturnsTrue(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -162,7 +162,7 @@ func TestAccessTokenBlacklistIsBlacklisted_KeyExists_ReturnsTrue(t *testing.T) {
 	assert.True(t, isBlacklisted, "should return true when key exists")
 }
 
-// TestAccessTokenBlacklistIsBlacklisted_KeyNotExists_ReturnsFalseNil 测试 key 不存在时返回 (false, nil)
+// TestAccessTokenBlacklistIsBlacklisted_KeyNotExists_ReturnsFalseNil 測試 key 不存在时返回 (false, nil)
 func TestAccessTokenBlacklistIsBlacklisted_KeyNotExists_ReturnsFalseNil(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -179,9 +179,9 @@ func TestAccessTokenBlacklistIsBlacklisted_KeyNotExists_ReturnsFalseNil(t *testi
 	assert.False(t, isBlacklisted, "should return false when key does not exist")
 }
 
-// TestAccessTokenBlacklistIsBlacklisted_FailOpen_RedisConnFailureReturnsError 测试 Redis 连接故障时返回 error（fail-open）
+// TestAccessTokenBlacklistIsBlacklisted_FailOpen_RedisConnFailureReturnsError 測試 Redis 連線故障时返回 error（fail-open）
 func TestAccessTokenBlacklistIsBlacklisted_FailOpen_RedisConnFailureReturnsError(t *testing.T) {
-	// 创建一个指向不存在服务的 client，模拟连接故障
+	// 建立一个指向不存在服务的 client，模拟連線故障
 	client := redis.NewClient(&redis.Options{
 		Addr:        "localhost:55555", // 不存在的端口
 		DialTimeout: 100 * time.Millisecond,
@@ -200,16 +200,16 @@ func TestAccessTokenBlacklistIsBlacklisted_FailOpen_RedisConnFailureReturnsError
 	assert.False(t, isBlacklisted, "should return false even when Redis fails (fail-open principle)")
 }
 
-// TestAccessTokenBlacklistIsBlacklisted_ContextTimeout_ReturnsError 测试 context timeout 时返回 error
+// TestAccessTokenBlacklistIsBlacklisted_ContextTimeout_ReturnsError 測試 context timeout 时返回 error
 func TestAccessTokenBlacklistIsBlacklisted_ContextTimeout_ReturnsError(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
 
-	// 创建已过期的 context
+	// 建立已過期的 context
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 	defer cancel()
 
-	time.Sleep(10 * time.Millisecond) // 让 context 确实过期
+	time.Sleep(10 * time.Millisecond) // 让 context 确实過期
 
 	blacklist := NewAccessTokenBlacklist(client)
 	jti := "test-jti"
@@ -221,7 +221,7 @@ func TestAccessTokenBlacklistIsBlacklisted_ContextTimeout_ReturnsError(t *testin
 	assert.False(t, isBlacklisted, "should return false on context timeout")
 }
 
-// TestAccessTokenBlacklistKeyFormat_CorrectKeyGeneration 测试 key 格式为 auth:blacklist:<jti>
+// TestAccessTokenBlacklistKeyFormat_CorrectKeyGeneration 測試 key 格式为 auth:blacklist:<jti>
 func TestAccessTokenBlacklistKeyFormat_CorrectKeyGeneration(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -238,13 +238,13 @@ func TestAccessTokenBlacklistKeyFormat_CorrectKeyGeneration(t *testing.T) {
 	err := blacklist.Add(ctx, jti, 10*time.Minute)
 	require.NoError(t, err)
 
-	// 通过直接访问 Redis 验证 key 格式
+	// 通过直接存取 Redis 驗證 key 格式
 	val, err := client.Get(ctx, expectedKey).Result()
 	require.NoError(t, err, "key should exist with correct format")
 	assert.Equal(t, "1", val, "key value should be '1'")
 }
 
-// TestAccessTokenBlacklistAdd_MultipleJTIs_IndependentStorage 测试多个 JTI 独立存储
+// TestAccessTokenBlacklistAdd_MultipleJTIs_IndependentStorage 測試多个 JTI 独立存储
 func TestAccessTokenBlacklistAdd_MultipleJTIs_IndependentStorage(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -265,7 +265,7 @@ func TestAccessTokenBlacklistAdd_MultipleJTIs_IndependentStorage(t *testing.T) {
 	require.NoError(t, err1)
 	require.NoError(t, err2)
 
-	// 验证两个都存在且独立
+	// 驗證两个都存在且独立
 	is1Blacklisted, err := blacklist.IsBlacklisted(ctx, jti1)
 	require.NoError(t, err)
 	assert.True(t, is1Blacklisted, "jti1 should be blacklisted")
@@ -275,9 +275,9 @@ func TestAccessTokenBlacklistAdd_MultipleJTIs_IndependentStorage(t *testing.T) {
 	assert.True(t, is2Blacklisted, "jti2 should be blacklisted")
 }
 
-// TestAccessTokenBlacklistIsBlacklisted_FailOpenBehavior_ErrorDoesNotBecomeTrue 测试 fail-open：错误时绝不返回 true
+// TestAccessTokenBlacklistIsBlacklisted_FailOpenBehavior_ErrorDoesNotBecomeTrue 測試 fail-open：錯誤时绝不返回 true
 func TestAccessTokenBlacklistIsBlacklisted_FailOpenBehavior_ErrorDoesNotBecomeTrue(t *testing.T) {
-	// 创建指向不可达的 Redis
+	// 建立指向不可达的 Redis
 	client := redis.NewClient(&redis.Options{
 		Addr:        "10.255.255.1:6379", // 不可达 IP，会超时
 		DialTimeout: 50 * time.Millisecond,
@@ -297,7 +297,7 @@ func TestAccessTokenBlacklistIsBlacklisted_FailOpenBehavior_ErrorDoesNotBecomeTr
 	assert.False(t, isBlacklisted, "fail-open: must return false even on Redis error, never true")
 }
 
-// TestAccessTokenBlacklistAdd_ShortTTL_MinimalDelay 测试小于 1 秒的 TTL
+// TestAccessTokenBlacklistAdd_ShortTTL_MinimalDelay 測試小于 1 秒的 TTL
 func TestAccessTokenBlacklistAdd_ShortTTL_MinimalDelay(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -314,12 +314,12 @@ func TestAccessTokenBlacklistAdd_ShortTTL_MinimalDelay(t *testing.T) {
 	err := blacklist.Add(ctx, jti, ttl)
 	require.NoError(t, err)
 
-	// 验证存在
+	// 驗證存在
 	exists, err := client.Exists(ctx, key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), exists, "key should exist")
 
-	// 等待过期
+	// 等待過期
 	time.Sleep(150 * time.Millisecond)
 
 	exists, err = client.Exists(ctx, key).Result()
@@ -327,7 +327,7 @@ func TestAccessTokenBlacklistAdd_ShortTTL_MinimalDelay(t *testing.T) {
 	assert.Equal(t, int64(0), exists, "key should be evicted")
 }
 
-// TestAccessTokenBlacklistAdd_LongTTL_AccessTokenMaxExpiry 测试长 TTL（访问 token 最长有效期）
+// TestAccessTokenBlacklistAdd_LongTTL_AccessTokenMaxExpiry 測試长 TTL（存取 token 最长有效期）
 func TestAccessTokenBlacklistAdd_LongTTL_AccessTokenMaxExpiry(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -339,18 +339,18 @@ func TestAccessTokenBlacklistAdd_LongTTL_AccessTokenMaxExpiry(t *testing.T) {
 
 	blacklist := NewAccessTokenBlacklist(client)
 	jti := "test-long-ttl"
-	ttl := 1 * time.Hour // 访问 token 可能的最长存活期
+	ttl := 1 * time.Hour // 存取 token 可能的最长存活期
 
 	err := blacklist.Add(ctx, jti, ttl)
 	require.NoError(t, err)
 
-	// 验证存在
+	// 驗證存在
 	isBlacklisted, err := blacklist.IsBlacklisted(ctx, jti)
 	require.NoError(t, err)
 	assert.True(t, isBlacklisted, "should be blacklisted with long TTL")
 }
 
-// TestAccessTokenBlacklistIsBlacklisted_CaseInsensitiveJTI_DifferentKeysSeparate 测试 JTI 大小写敏感
+// TestAccessTokenBlacklistIsBlacklisted_CaseInsensitiveJTI_DifferentKeysSeparate 測試 JTI 大小写敏感
 func TestAccessTokenBlacklistIsBlacklisted_CaseInsensitiveJTI_DifferentKeysSeparate(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -368,18 +368,18 @@ func TestAccessTokenBlacklistIsBlacklisted_CaseInsensitiveJTI_DifferentKeysSepar
 	// 只添加小写版本
 	_ = blacklist.Add(ctx, jtiLower, 10*time.Minute)
 
-	// 验证小写存在
+	// 驗證小写存在
 	is1, err := blacklist.IsBlacklisted(ctx, jtiLower)
 	require.NoError(t, err)
 	assert.True(t, is1, "lowercase jti should be blacklisted")
 
-	// 验证大写不存在（key 大小写敏感）
+	// 驗證大写不存在（key 大小写敏感）
 	is2, err := blacklist.IsBlacklisted(ctx, jtiUpper)
 	require.NoError(t, err)
 	assert.False(t, is2, "uppercase jti should NOT be blacklisted (keys are case-sensitive)")
 }
 
-// TestAccessTokenBlacklistAdd_SpecialCharactersInJTI_ValidKeyGeneration 测试 JTI 包含特殊字符
+// TestAccessTokenBlacklistAdd_SpecialCharactersInJTI_ValidKeyGeneration 測試 JTI 包含特殊字符
 func TestAccessTokenBlacklistAdd_SpecialCharactersInJTI_ValidKeyGeneration(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -400,7 +400,7 @@ func TestAccessTokenBlacklistAdd_SpecialCharactersInJTI_ValidKeyGeneration(t *te
 	assert.True(t, isBlacklisted, "should find blacklisted JTI with special characters")
 }
 
-// TestAccessTokenBlacklistIsBlacklisted_AfterAdd_ImmediateVisibility 测试 Add 后立即可查询
+// TestAccessTokenBlacklistIsBlacklisted_AfterAdd_ImmediateVisibility 測試 Add 后立即可查询
 func TestAccessTokenBlacklistIsBlacklisted_AfterAdd_ImmediateVisibility(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -423,7 +423,7 @@ func TestAccessTokenBlacklistIsBlacklisted_AfterAdd_ImmediateVisibility(t *testi
 	assert.True(t, isBlacklisted, "should be immediately visible after Add")
 }
 
-// TestAccessTokenBlacklistAdd_SameJTITwice_Overwrites 测试同一 JTI 添加两次时覆盖
+// TestAccessTokenBlacklistAdd_SameJTITwice_Overwrites 測試同一 JTI 添加两次时覆盖
 func TestAccessTokenBlacklistAdd_SameJTITwice_Overwrites(t *testing.T) {
 	client := newTestRedisClient(t)
 	defer client.Close()
@@ -440,7 +440,7 @@ func TestAccessTokenBlacklistAdd_SameJTITwice_Overwrites(t *testing.T) {
 	err := blacklist.Add(ctx, jti, 10*time.Second)
 	require.NoError(t, err)
 
-	// 验证第一次成功
+	// 驗證第一次成功
 	is1, err := blacklist.IsBlacklisted(ctx, jti)
 	require.NoError(t, err)
 	assert.True(t, is1)
@@ -449,12 +449,12 @@ func TestAccessTokenBlacklistAdd_SameJTITwice_Overwrites(t *testing.T) {
 	err = blacklist.Add(ctx, jti, 1*time.Hour)
 	require.NoError(t, err)
 
-	// 验证仍在黑名单
+	// 驗證仍在黑名单
 	is2, err := blacklist.IsBlacklisted(ctx, jti)
 	require.NoError(t, err)
 	assert.True(t, is2, "should still be blacklisted after second Add")
 
-	// 验证新 TTL 已应用（通过 PTTL 检查，应该是 ~1h，不是 ~10s）
+	// 驗證新 TTL 已應用（通过 PTTL 檢查，应该是 ~1h，不是 ~10s）
 	pttl, err := client.PTTL(ctx, key).Result()
 	require.NoError(t, err)
 	assert.Greater(t, pttl, 50*time.Minute, "new TTL should be applied (close to 1 hour)")

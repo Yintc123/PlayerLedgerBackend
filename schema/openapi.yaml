@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: PlayerLedger Backend API
-  version: 0.1.0
+  version: 1.10.0
   description: |
     PlayerLedger Backend HTTP API。
     完整認證設計見 [ADR 007](../docs/adr/007-refresh-token-rotation-and-replay-detection.md)。

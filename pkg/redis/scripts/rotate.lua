@@ -15,7 +15,7 @@ local now = tonumber(ARGV[3])
 local grace_until = tonumber(ARGV[4]) + now
 local abs_ttl_remaining = tonumber(f.abs_exp) - now
 
--- abs_exp 过期 → 视同 family 不存在（理论上 Redis TTL 已先到，但双保险）
+-- abs_exp 過期 → 视同 family 不存在（理论上 Redis TTL 已先到，但双保险）
 if abs_ttl_remaining <= 0 then
     redis.call("DEL", KEYS[1])
     redis.call("SREM", KEYS[2], ARGV[5])
@@ -32,13 +32,13 @@ if f.current_jti == ARGV[1] then
     return {1, cjson.encode(f)}
 end
 
--- Grace window 命中（网络重试）
+-- Grace window 命中（網路重试）
 if f.previous_jti and f.previous_jti == ARGV[1]
    and tonumber(f.previous_response_until or 0) > now then
     return {2, cjson.encode(f)}
 end
 
--- 重放侦测 → 廃掉 family + 同步清掉索引
+-- 重放偵測 → 廢掉 family + 同步清掉索引
 redis.call("DEL", KEYS[1])
 redis.call("SREM", KEYS[2], ARGV[5])
 return {3, cjson.encode(f)}

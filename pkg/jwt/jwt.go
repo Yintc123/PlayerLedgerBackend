@@ -8,7 +8,6 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/yintengching/playerledger/config"
-	"github.com/yintengching/playerledger/internal/apperr"
 )
 
 // AccessClaims — access token claims 定义。
@@ -166,24 +165,24 @@ func (m *manager) VerifyAccess(ctx context.Context, tokenString string) (*Access
 	if err != nil {
 		// 區分「過期」與「其他錯誤」（§8.3）
 		if errors.Is(err, jwt.ErrTokenExpired) {
-			return nil, apperr.ErrTokenExpired
+			return nil, ErrTokenExpired
 		}
-		return nil, apperr.ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	claims, ok := token.Claims.(*AccessClaims)
 	if !ok || !token.Valid {
-		return nil, apperr.ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	// iss 檢查（§8.3 步驟 2）
 	if claims.Issuer != m.cfg.Issuer {
-		return nil, apperr.ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	// aud 白名單檢查（§8.3 步驟 3）
 	if len(claims.Audience) == 0 || !m.clientIDWhitelist[claims.Audience[0]] {
-		return nil, apperr.ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	return claims, nil
@@ -216,31 +215,31 @@ func (m *manager) VerifyRefresh(ctx context.Context, tokenString string) (*Refre
 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {
-			return nil, apperr.ErrTokenExpired
+			return nil, ErrTokenExpired
 		}
-		return nil, apperr.ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	claims, ok := token.Claims.(*RefreshClaims)
 	if !ok || !token.Valid {
-		return nil, apperr.ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	// iss 檢查（§8.3 步驟 2）
 	if claims.Issuer != m.cfg.Issuer {
-		return nil, apperr.ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	// aud 白名單檢查（§8.3 步驟 3）
 	if len(claims.Audience) == 0 || !m.clientIDWhitelist[claims.Audience[0]] {
-		return nil, apperr.ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	// 步驟 5：abs_exp 額外檢查（§8.3）— 含 leeway，abs_exp 由 server state 管控
 	now := time.Now()
 	absExpTime := time.Unix(claims.AbsoluteExp, 0)
 	if now.After(absExpTime.Add(m.cfg.ClockSkewLeeway)) {
-		return nil, apperr.ErrAbsoluteExpired
+		return nil, ErrAbsoluteExpired
 	}
 
 	return claims, nil
@@ -250,7 +249,7 @@ func (m *manager) VerifyRefresh(ctx context.Context, tokenString string) (*Refre
 func (m *manager) PolicyOf(ctx context.Context, clientID string) (config.ClientPolicy, error) {
 	policy, ok := m.cfg.ClientPolicies[clientID]
 	if !ok {
-		return config.ClientPolicy{}, apperr.ErrInvalidClient
+		return config.ClientPolicy{}, ErrInvalidClient
 	}
 	return policy, nil
 }

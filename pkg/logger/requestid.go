@@ -22,7 +22,7 @@ func RequestID() gin.HandlerFunc {
 	}
 }
 
-// isValidRequestID 验证 request ID 的合法性
+// isValidRequestID 驗證 request ID 的合法性
 func isValidRequestID(id string) bool {
 	if id == "" || len(id) > 128 {
 		return false
@@ -35,7 +35,7 @@ func isValidRequestID(id string) bool {
 	return true
 }
 
-// GetRequestID 从 gin.Context 获取 request_id
+// GetRequestID 从 gin.Context 取得 request_id
 func GetRequestID(c *gin.Context) string {
 	id, _ := c.Get(RequestIDKey)
 	s, _ := id.(string)

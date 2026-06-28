@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/yintengching/playerledger/internal/dto"
 	"github.com/yintengching/playerledger/internal/service"
 	"github.com/yintengching/playerledger/pkg/httpx"
 	"github.com/yintengching/playerledger/pkg/jwt"
@@ -67,14 +68,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Password:  req.Password,
 		ClientID:  req.ClientID,
 		IP:        c.ClientIP(),
-		UserAgent: c.Request.Header.Get("User-Agent"),
+		UserAgent: c.Request.UserAgent(),
 	})
 	if err != nil {
 		HandleError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, OK(c, tokenPair))
+	c.JSON(http.StatusOK, OK(c, dto.FromTokenPair(tokenPair)))
 }
 
 // RefreshRequest refresh 請求（§3.5.3）。
@@ -93,14 +94,14 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	tokenPair, err := h.authService.Refresh(c.Request.Context(), service.RefreshInput{
 		RefreshToken: req.RefreshToken,
 		IP:           c.ClientIP(),
-		UserAgent:    c.Request.Header.Get("User-Agent"),
+		UserAgent:    c.Request.UserAgent(),
 	})
 	if err != nil {
 		HandleError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, OK(c, tokenPair))
+	c.JSON(http.StatusOK, OK(c, dto.FromTokenPair(tokenPair)))
 }
 
 // LogoutRequest 登出請求（optional body，§3.5.3）。
@@ -153,7 +154,7 @@ func (h *AuthHandler) ListSessions(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, OK(c, sessions))
+	c.JSON(http.StatusOK, OK(c, dto.FromSessionInfoList(sessions)))
 }
 
 // RevokeSession DELETE /auth/sessions/:fid

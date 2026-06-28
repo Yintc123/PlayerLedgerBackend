@@ -3,10 +3,12 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 	"github.com/yintengching/playerledger/internal/apperr"
 	"github.com/yintengching/playerledger/pkg/httpx"
 	"github.com/yintengching/playerledger/pkg/logger"
@@ -16,7 +18,21 @@ import (
 // HandleError 將 domain error 轉為 HTTP 回應（§12.3 / §12.4）。
 // 呼叫端不需再處理 errorCode 映射；一律由此統一轉換。
 func HandleError(c *gin.Context, err error) {
-	// ShouldBindJSON 失敗 — JSON 解析錯誤或 struct tag 驗證失敗（§12.3）
+	// 1) Struct tag 驗證失敗（go-playground/validator）— 帶 details 回 400（§12.3）。
+	var ve validator.ValidationErrors
+	if errors.As(err, &ve) {
+		details := make([]httpx.FieldError, 0, len(ve))
+		for _, fe := range ve {
+			details = append(details, httpx.FieldError{
+				Field:   fe.Field(),
+				Message: fmt.Sprintf("failed on the '%s' tag", fe.Tag()),
+			})
+		}
+		httpx.WriteErrorWithDetails(c, http.StatusBadRequest, "invalid input", details)
+		return
+	}
+
+	// 2) ShouldBindJSON 失敗 — JSON 解析錯誤或 EOF（§12.3）
 	var syntaxErr *json.SyntaxError
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
@@ -24,7 +40,7 @@ func HandleError(c *gin.Context, err error) {
 		return
 	}
 
-	// 處理 binding validation 錯誤（gin 包裝後型別不同）
+	// 3) Gin 包裝後的 EOF（型別差異）
 	if err.Error() == "EOF" {
 		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
 		return

@@ -215,7 +215,7 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *AuthHandler) {
 	familyStore := NewFakeFamilyStore()
 	blacklist := NewFakeBlacklist()
 
-	authSvc := service.NewAuthService(cmsUserRepo, memberRepo, jwtManager, hasherImpl, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute)
+	authSvc := service.NewAuthService(cmsUserRepo, memberRepo, jwtManager, hasherImpl, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute, 10*time.Second)
 	handler := NewAuthHandler(authSvc)
 
 	router := gin.New()
@@ -404,7 +404,7 @@ func TestAuthHandler_Login_Success_CMSUser(t *testing.T) {
 	assert.Equal(t, "Bearer", data["token_type"])
 }
 
-// TestAuthHandler_Login_InvalidCredentials — POST /auth/login 当密码错误
+// TestAuthHandler_Login_InvalidCredentials — POST /auth/login 当密码錯誤
 func TestAuthHandler_Login_InvalidCredentials(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -421,7 +421,7 @@ func TestAuthHandler_Login_InvalidCredentials(t *testing.T) {
 	router.ServeHTTP(w1, req1)
 	require.Equal(t, http.StatusCreated, w1.Code)
 
-	// 用错误密码登入
+	// 用錯誤密码登入
 	loginBody := map[string]string{
 		"username":  "cmsuser",
 		"password":  "wrongpassword",
@@ -486,7 +486,7 @@ func TestAuthHandler_Login_InvalidClient(t *testing.T) {
 	assert.Equal(t, "invalid_client", resp["error"])
 }
 
-// TestAuthHandler_ResponseEnvelope — 验证响应符合 §3.5 / §10 envelope 格式
+// TestAuthHandler_ResponseEnvelope — 驗證响应符合 §3.5 / §10 envelope 格式
 func TestAuthHandler_ResponseEnvelope(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -507,7 +507,7 @@ func TestAuthHandler_ResponseEnvelope(t *testing.T) {
 	assert.NotEmpty(t, w.Header().Get("X-Request-ID"))
 }
 
-// TestAuthHandler_ErrorResponseEnvelope — 验证错误响应符合 §3.5 / §12.1 envelope 格式
+// TestAuthHandler_ErrorResponseEnvelope — 驗證錯誤响应符合 §3.5 / §12.1 envelope 格式
 func TestAuthHandler_ErrorResponseEnvelope(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -527,13 +527,13 @@ func TestAuthHandler_ErrorResponseEnvelope(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &resp)
 	require.NoError(t, err)
 
-	// 验证错误 envelope 结构（§3.5 / §12.1）
+	// 驗證錯誤 envelope 结构（§3.5 / §12.1）
 	assert.Equal(t, false, resp["success"])
 	assert.NotEmpty(t, resp["request_id"])
 	assert.NotEmpty(t, resp["error"])
 }
 
-// TestAuthHandler_Logout_MissingAuth — POST /auth/logout 无认证时
+// TestAuthHandler_Logout_MissingAuth — POST /auth/logout 无認證时
 func TestAuthHandler_Logout_MissingAuth(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -550,7 +550,7 @@ func TestAuthHandler_Logout_MissingAuth(t *testing.T) {
 	assert.Equal(t, "unauthorized", resp["error"])
 }
 
-// TestAuthHandler_ListSessions_MissingAuth — GET /auth/sessions 无认证时
+// TestAuthHandler_ListSessions_MissingAuth — GET /auth/sessions 无認證时
 func TestAuthHandler_ListSessions_MissingAuth(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -566,7 +566,7 @@ func TestAuthHandler_ListSessions_MissingAuth(t *testing.T) {
 	assert.Equal(t, "unauthorized", resp["error"])
 }
 
-// TestAuthHandler_RevokeSession_MissingAuth — DELETE /auth/sessions/{fid} 无认证时
+// TestAuthHandler_RevokeSession_MissingAuth — DELETE /auth/sessions/{fid} 无認證时
 func TestAuthHandler_RevokeSession_MissingAuth(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -582,7 +582,7 @@ func TestAuthHandler_RevokeSession_MissingAuth(t *testing.T) {
 	assert.Equal(t, "unauthorized", resp["error"])
 }
 
-// TestAuthHandler_RevokeAllSessions_MissingAuth — POST /auth/sessions/revoke-all 无认证时
+// TestAuthHandler_RevokeAllSessions_MissingAuth — POST /auth/sessions/revoke-all 无認證时
 func TestAuthHandler_RevokeAllSessions_MissingAuth(t *testing.T) {
 	router, _ := setupTestRouter(t)
 

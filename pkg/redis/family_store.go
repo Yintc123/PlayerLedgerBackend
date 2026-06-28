@@ -52,13 +52,13 @@ type FamilyState struct {
 }
 
 // FamilyStore — Refresh Token Family 的原子操作接口。
-// Save / Rotate / Revoke / RevokeAll 涉及多 key，皆以 Lua script 一次原子执行。
-// ListByUser 采 lazy cleanup：读取时顺手 SREM 已过期的孤儿 fid。
+// Save / Rotate / Revoke / RevokeAll 涉及多 key，皆以 Lua script 一次原子執行。
+// ListByUser 采 lazy cleanup：讀取时顺手 SREM 已過期的孤儿 fid。
 type FamilyStore interface {
 	// Save：login 时建立新 family（同时 SADD 入 user_families 索引）
 	Save(ctx context.Context, state FamilyState) error
 
-	// Rotate：原子 CAS — 验证 presented_jti、更新 current/previous、设定 grace window。
+	// Rotate：原子 CAS — 驗證 presented_jti、更新 current/previous、设定 grace window。
 	// Lua 从 state 内部读 AbsoluteExp 计算 Redis TTL；触发重放时 Lua 自动 DEL family + SREM 索引。
 	//
 	// 回传 invariant：
@@ -81,7 +81,7 @@ type FamilyStore interface {
 	// ListByUser：列出该 user 所有 family（含 lazy cleanup 孤儿 fid）。
 	// 用于 GET /auth/sessions 页面。
 	//
-	// Redis SMEMBERS 出来无序；本实作须在 Go layer 对结果 **sort by LastRotatedAt desc**，
+	// Redis SMEMBERS 出来无序；本實作须在 Go layer 对结果 **sort by LastRotatedAt desc**，
 	// 让「最近活躃的装置」排在前面（UX 预期）。caller 不需再 sort。
 	ListByUser(ctx context.Context, userID string) ([]FamilyState, error)
 
@@ -89,7 +89,7 @@ type FamilyStore interface {
 	// 供 /health/ready 探测。constructor 内载入成功前回 false；成功后恒为 true
 	// （process 生命周期内不重置）。
 	//
-	// 为何不公开 PreloadScripts：避免 caller 在 constructor 之外 lazy-load 而忘了检查
+	// 为何不公开 PreloadScripts：避免 caller 在 constructor 之外 lazy-load 而忘了檢查
 	// 回传 error；NewFamilyStore 拿到的 instance 必为「已 ready」状态，否则 constructor
 	// 直接回 error，由 main fatal 退出，避免冷启动首次 refresh 才踩到 NOSCRIPT 重试 latency。
 	ScriptsLoaded() bool
@@ -112,7 +112,7 @@ type familyStore struct {
 func NewFamilyStore(ctx context.Context, client *redis.Client, cfg config.JWTConfig) (FamilyStore, error) {
 	fs := &familyStore{client: client}
 
-	// 从 embed.FS 读取所有 Lua 脚本
+	// 从 embed.FS 讀取所有 Lua 脚本
 	saveBody, err := scriptsFS.ReadFile("scripts/save.lua")
 	if err != nil {
 		return nil, fmt.Errorf("read save.lua: %w", err)
@@ -138,7 +138,7 @@ func NewFamilyStore(ctx context.Context, client *redis.Client, cfg config.JWTCon
 		return nil, fmt.Errorf("read list_with_cleanup.lua: %w", err)
 	}
 
-	// 包装成 redis.Script 对象，并自动 SCRIPT LOAD
+	// 包裝成 redis.Script 对象，并自动 SCRIPT LOAD
 	fs.saveScript = redis.NewScript(string(saveBody))
 	fs.rotateScript = redis.NewScript(string(rotateBody))
 	fs.revokeScript = redis.NewScript(string(revokeBody))
@@ -175,7 +175,7 @@ func NewFamilyStore(ctx context.Context, client *redis.Client, cfg config.JWTCon
 	return fs, nil
 }
 
-// Save 实现 FamilyStore.Save。
+// Save 實作 FamilyStore.Save。
 func (fs *familyStore) Save(ctx context.Context, state FamilyState) error {
 	if !fs.scriptsReady {
 		return fmt.Errorf("family store not ready")
@@ -211,7 +211,7 @@ func (fs *familyStore) Save(ctx context.Context, state FamilyState) error {
 	return err
 }
 
-// Rotate 实现 FamilyStore.Rotate。
+// Rotate 實作 FamilyStore.Rotate。
 func (fs *familyStore) Rotate(ctx context.Context, userID, fid, presentedJTI, newJTI string,
 	graceWindow time.Duration) (RotateResult, *FamilyState, error) {
 	if !fs.scriptsReady {
@@ -275,14 +275,14 @@ func (fs *familyStore) Rotate(ctx context.Context, userID, fid, presentedJTI, ne
 
 	var state FamilyState
 	if err := json.Unmarshal([]byte(stateJSON), &state); err != nil {
-		// Lua 返回了错误的 JSON，fail-closed
+		// Lua 返回了錯誤的 JSON，fail-closed
 		return FamilyNotFound, nil, nil
 	}
 
 	return rotateResult, &state, nil
 }
 
-// Revoke 实现 FamilyStore.Revoke。
+// Revoke 實作 FamilyStore.Revoke。
 func (fs *familyStore) Revoke(ctx context.Context, userID, fid string) error {
 	if !fs.scriptsReady {
 		return fmt.Errorf("family store not ready")
@@ -301,7 +301,7 @@ func (fs *familyStore) Revoke(ctx context.Context, userID, fid string) error {
 	return err
 }
 
-// RevokeAll 实现 FamilyStore.RevokeAll。
+// RevokeAll 實作 FamilyStore.RevokeAll。
 func (fs *familyStore) RevokeAll(ctx context.Context, userID string) error {
 	if !fs.scriptsReady {
 		return fmt.Errorf("family store not ready")
@@ -318,7 +318,7 @@ func (fs *familyStore) RevokeAll(ctx context.Context, userID string) error {
 	return err
 }
 
-// ListByUser 实现 FamilyStore.ListByUser。
+// ListByUser 實作 FamilyStore.ListByUser。
 func (fs *familyStore) ListByUser(ctx context.Context, userID string) ([]FamilyState, error) {
 	if !fs.scriptsReady {
 		return nil, fmt.Errorf("family store not ready")
@@ -346,7 +346,7 @@ func (fs *familyStore) ListByUser(ctx context.Context, userID string) ([]FamilyS
 	for _, item := range arr {
 		stateJSON, ok := item.(string)
 		if !ok {
-			// 跳过格式错误的项
+			// 跳过格式錯誤的项
 			continue
 		}
 
@@ -366,7 +366,7 @@ func (fs *familyStore) ListByUser(ctx context.Context, userID string) ([]FamilyS
 	return states, nil
 }
 
-// ScriptsLoaded 实现 FamilyStore.ScriptsLoaded。
+// ScriptsLoaded 實作 FamilyStore.ScriptsLoaded。
 func (fs *familyStore) ScriptsLoaded() bool {
 	return fs.scriptsReady
 }

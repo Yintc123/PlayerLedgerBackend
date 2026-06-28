@@ -13,7 +13,7 @@ import (
 )
 
 // IPMiddleware 以 c.ClientIP() 为限流 key（§15.2）
-// 掛在 /api/v1，所有人都受限（匿名 + 已认证）
+// 掛在 /api/v1，所有人都受限（匿名 + 已認證）
 func IPMiddleware(period time.Duration, limit int64, store limiter.Store) gin.HandlerFunc {
 	return newMiddleware(period, limit, store, func(c *gin.Context) string {
 		return "ratelimit:ip:" + c.ClientIP()
@@ -54,7 +54,7 @@ func newMiddleware(period time.Duration, limit int64, store limiter.Store,
 
 		ctx, err := lim.Get(c.Request.Context(), key)
 		if err != nil {
-			// Fail-open：limiter 故障时放行，记 warn 供监控
+			// Fail-open：limiter 故障时放行，记 warn 供監控
 			logger.L().Warn("rate limiter failed, allowing request",
 				zap.String("request_id", logger.GetRequestID(c)),
 				zap.Error(err),
@@ -65,7 +65,7 @@ func newMiddleware(period time.Duration, limit int64, store limiter.Store,
 		}
 
 		if ctx.Reached {
-			// 计算实际剩余秒数（避免客户端误解时戳）
+			// 计算實際剩余秒数（避免客户端误解时戳）
 			retryAfter := ctx.Reset - time.Now().Unix()
 			if retryAfter < 1 {
 				retryAfter = 1

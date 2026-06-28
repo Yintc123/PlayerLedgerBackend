@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -116,10 +115,11 @@ func newAuditCore(path string) (zapcore.Core, error) {
 }
 
 // Log 寫入單筆 audit event（§18.3.3）。
+// 不手動寫入 timestamp 欄位——encoder 已設 TimeKey: "timestamp" 自動注入；
+// 重複 zap.String("timestamp", ...) 會被 encoder 覆蓋或產生未定義行為。
 func (l *zapAuditLogger) Log(ctx context.Context, e AuthEvent) {
 	l.z.Info(string(e.Type),
 		zap.String("event_type", string(e.Type)),
-		zap.String("timestamp", time.Now().UTC().Format(time.RFC3339)),
 		zap.String("request_id", ctxkey.RequestID(ctx)),
 		zap.String("user_id", e.UserID),
 		zap.String("fid", e.FamilyID),

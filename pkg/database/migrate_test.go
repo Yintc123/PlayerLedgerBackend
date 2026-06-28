@@ -13,7 +13,7 @@ import (
 	"github.com/yintengching/playerledger/pkg/logger"
 )
 
-// TestRunMigrations_RequiresValidDatabase 验证 RunMigrations 需要有效的数据库连接
+// TestRunMigrations_RequiresValidDatabase 驗證 RunMigrations 需要有效的数据库連線
 func TestRunMigrations_RequiresValidDatabase(t *testing.T) {
 	// 初始化日志
 	err := logger.Init(config.LogConfig{Format: "json", Level: "info", Service: "test"}, "dev")
@@ -35,7 +35,7 @@ func TestRunMigrations_RequiresValidDatabase(t *testing.T) {
 	assert.Contains(t, err.Error(), "migrate")
 }
 
-// TestBuildDSNForMigration_ValidConfig 验证 migration DSN 包含 statement_timeout
+// TestBuildDSNForMigration_ValidConfig 驗證 migration DSN 包含 statement_timeout
 func TestBuildDSNForMigration_ValidConfig(t *testing.T) {
 	cfg := config.DatabaseConfig{
 		Host:             "localhost",
@@ -51,22 +51,22 @@ func TestBuildDSNForMigration_ValidConfig(t *testing.T) {
 	dsnURL := buildMigrationDSN(cfg)
 	assert.NotNil(t, dsnURL)
 
-	// 验证 scheme
+	// 驗證 scheme
 	assert.Equal(t, "postgres", dsnURL.Scheme)
 
-	// 验证 host
+	// 驗證 host
 	assert.Equal(t, "localhost:5432", dsnURL.Host)
 
-	// 验证 path
+	// 驗證 path
 	assert.Equal(t, "testdb", dsnURL.Path)
 
-	// 验证查询参数包含 statement_timeout（毫秒）
+	// 驗證查询参数包含 statement_timeout（毫秒）
 	queryValues := dsnURL.Query()
 	assert.Equal(t, "require", queryValues.Get("sslmode"))
 	assert.Equal(t, "300000", queryValues.Get("statement_timeout")) // 5m = 300000ms
 }
 
-// TestBuildDSNForMigration_PasswordRedaction 验证 password redact 函数正确处理
+// TestBuildDSNForMigration_PasswordRedaction 驗證 password redact 函数正确处理
 func TestBuildDSNForMigration_PasswordRedaction(t *testing.T) {
 	cfg := config.DatabaseConfig{
 		Host:             "localhost",
@@ -81,27 +81,27 @@ func TestBuildDSNForMigration_PasswordRedaction(t *testing.T) {
 
 	dsnURL := buildMigrationDSN(cfg)
 
-	// 获取 password（url.URL 内部会 decode）
+	// 取得 password（url.URL 内部会 decode）
 	if user := dsnURL.User; user != nil {
 		password, _ := user.Password()
 		assert.Equal(t, "super-secret-pass", password)
 	}
 
-	// 验证 redact 函数能正确隐蔽密码
+	// 驗證 redact 函数能正确隐蔽密码
 	redacted := redactedDSN(dsnURL)
 	assert.NotContains(t, redacted, "super-secret-pass")
 	// redactedDSN 会把密码替换为 *** 然后 URL encode，所以 *** 会变成 %2A%2A%2A
 	assert.Contains(t, redacted, "%2A%2A%2A")
 }
 
-// TestMigrationStatementTimeout 验证 migration statement timeout 常量被正确使用
+// TestMigrationStatementTimeout 驗證 migration statement timeout 常量被正确使用
 func TestMigrationStatementTimeout(t *testing.T) {
-	// 验证常量定义
+	// 驗證常量定义
 	assert.Equal(t, 5*time.Minute, migrationStatementTimeout)
 	assert.Equal(t, int64(300000), migrationStatementTimeout.Milliseconds())
 }
 
-// TestRunMigrations_WithValidDatabase 集成测试：验证在真实数据库上成功运行 migrations
+// TestRunMigrations_WithValidDatabase 集成測試：驗證在真实数据库上成功运行 migrations
 func TestRunMigrations_WithValidDatabase(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -134,7 +134,7 @@ func TestRunMigrations_WithValidDatabase(t *testing.T) {
 	_ = ctx
 }
 
-// 辅助函数：构建 migration DSN 用于测试（模拟 RunMigrations 内部逻辑）
+// 辅助函数：构建 migration DSN 用于測試（模拟 RunMigrations 内部逻辑）
 func buildMigrationDSN(cfg config.DatabaseConfig) *url.URL {
 	dsnURL := &url.URL{
 		Scheme: "postgres",
