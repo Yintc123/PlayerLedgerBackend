@@ -1,4 +1,4 @@
-.PHONY: help build run migrate-up lint test test-unit test-integration security fmt clean docker-up docker-down
+.PHONY: help build build-lambda-zip run migrate-up seed lint test test-unit test-integration security fmt clean docker-up docker-down
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════
 # Build & Run
@@ -16,6 +16,21 @@ build:
 run: build
 	@echo "Starting server..."
 	./bin/server
+
+# 打包成 AWS Lambda ZIP（provided.al2023 + 架構 arm64 + Lambda Web Adapter layer）。
+# 不需 Docker、不需 ECR；產出 bin/lambda.zip 直接在 Lambda Console 上傳。
+# 執行檔須命名 bootstrap 並置於 zip 根目錄（custom runtime 慣例）。
+# 部署步驟見 .aws/README-lambda.md。
+build-lambda-zip:
+	@echo "Building Lambda ZIP (provided.al2023, arm64, LWA layer)..."
+	@mkdir -p bin
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
+	  -trimpath -tags=netgo,osusergo \
+	  -ldflags "-s -w -X main.Version=$$(git describe --tags --always) \
+	            -X main.Commit=$$(git rev-parse HEAD)" \
+	  -o bin/bootstrap ./cmd/server
+	zip -j -q bin/lambda.zip bin/bootstrap
+	@echo "✓ bin/lambda.zip ready — upload in Lambda console"
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════
 # Database
@@ -40,6 +55,13 @@ migrate-down:
 	  -database "postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=${DB_SSLMODE}" \
 	  down 1
 	@echo "✓ Rollback completed"
+
+# 寫入開發假資料：20 筆 members + 50 筆 deposit_records（冪等，可重複執行）。
+# 嚴禁在 prod（APP_ENV=prod 會中止）。seed 玩家密碼見程式輸出。
+seed: .env
+	@echo "Seeding dev fake data (20 members + 50 deposit records)..."
+	go run ./cmd/seed
+	@echo "✓ Seed completed"
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════
 # Quality Checks
@@ -123,6 +145,7 @@ help:
 	@echo ""
 	@echo "Build & Run:"
 	@echo "  make build              - Build binary (bin/server)"
+	@echo "  make build-lambda-zip   - Build AWS Lambda ZIP (bin/lambda.zip; no Docker/ECR)"
 	@echo "  make run                - Build and run server"
 	@echo ""
 	@echo "Database:"

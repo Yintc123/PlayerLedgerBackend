@@ -1,7 +1,10 @@
 # PlayerLedger Backend — 基礎架構規格書
 
-版本：v1.13
+版本：v1.14
 日期：2026-06-29
+
+> v1.14：新增 §13.6 開發假資料 seed（`cmd/seed`：20 members + 50 deposit_records，env 擋 prod、冪等、生成邏輯可測）。
+> §6.5 member dev/test seed 由「SQL 手動」更正為應用層 `cmd/seed`（比照 §13.5 admin seed，密碼/假資料不進版控 migration）。
 
 > v1.13：移除 API 版本前綴——`apiGroup` 由 `/api/v1` 改為 `/api`（§9.2 router；§15 IPMiddleware 掛載點說明同步）。
 > auth 與 member 端點皆改為無版本號（`/api/auth/*`、`/api/me/*`），與 CMS 端點一致；對齊
@@ -1164,7 +1167,7 @@ Auth 必需的兩張表 — `cms_users`（CMS 內部人員）與 `members`（一
 > **設計取捨**：
 > - 兩張表結構刻意對齊（id、username、password_hash + 標準 timestamps），便於 `Hasher`（§8.3.2）與 audit log（§18.3）統一處理。
 > - `members` **不放 `role` 欄位** — `utype=member ⇒ role=member` 是規則，由程式碼 enforce，避免 DB 重複資料。
-> - **Member 註冊現階段不開放**，dev/test 透過 SQL 手動 seed；正式註冊機制（自註冊 / 邀請 / 外部 sync）待後續業務 spec 決定。`MemberRepository` 因此只暴露 `FindByUsername`，不提供 `Create`。
+> - **Member 註冊現階段不開放**，dev/test 透過應用層 seed 工具 `cmd/seed`（比照 §13.5 admin seed，不寫 SQL；見 §13.6）建立；正式註冊機制（自註冊 / 邀請 / 外部 sync）待後續業務 spec 決定。`MemberRepository` 因此只暴露 `FindByUsername`，不提供 `Create`；seed 工具不經 repository，直接以 GORM 寫入 member。
 > - **CMS 開放自註冊**（見 §8.2 / §8.9 Register 流程），預設 role 為 `user`。`role` 升級／降級走 admin-only endpoint，留給後續業務 spec。
 
 ```go
@@ -3084,6 +3087,29 @@ func EnsureAdminFromConfig(
 
 > **為何不主動覆寫已存在 admin 的密碼**：
 > 在啟動時無聲覆寫會造成兩個問題：(1) 任何重啟都可能改密碼，運維難以追蹤；(2) audit log 缺少「誰改了密碼」紀錄（不像走 CMS API 有 actor）。改密碼一律走 CMS API 或運維手動 SQL，留下稽核軌跡。
+
+### 13.6 開發假資料 seed（dev fixtures）
+
+dev/staging 探索與前後端聯調需要一批可預期的假資料。延續 §13.5「seed 走應用層、不寫進版控 migration」的原則，提供獨立指令 `cmd/seed`（非 `cmd/server` 啟動流程的一部分，不影響正式部署）。
+
+```bash
+make seed            # 或 APP_ENV=dev go run ./cmd/seed
+```
+
+**產出**：20 筆 `members`（`seed_player_001`～`020`）＋ 50 筆 `deposit_records`（`reference_no` = `SEED-REF-0001`～`0050`）。
+
+**設計決策**：
+
+- **嚴禁 prod**：`APP_ENV=prod` 直接中止，假資料不得進入正式環境。
+- **冪等**：可重複執行。`members` 以 `username` upsert（查無才建）；`deposit_records` 先查既有 `SEED-REF-%` 再只插缺少者，避免重跑撞唯一索引、產生整批 duplicate-key error log。
+- **不繞過契約**：`members` 因 `MemberRepository` 不提供 `Create`（§6.5），seed 直接以 GORM 寫入；`deposit_records` 走 `DepositRecordRepository.Create`，與 production code path 一致。
+- **共用密碼**：所有 seed 玩家共用固定密碼（bcrypt，cost 取 `JWTConfig.BcryptCost`），僅供 dev/staging 登入測試；密碼字串於指令結束時印出。
+
+**合規性**（滿足「儲值紀錄資料模型規格書」）：`player_name` 取 `members.username` 快照；`amount` 恆 > 0、`currency` 固定 `TWD`；`status` 與 `payment_method` 輪巡全部合法 enum（各 10 筆）；`operator_id` 綁現有 admin、`operator_ip` 填範例 INET。
+
+> **狀態為快照、非轉移結果**：seed 直接寫入 `completed` / `refunded` 等終態，不重演 §4 狀態機的轉移歷史。§4 規範的是 PATCH 的轉移合法性，不限制「列可處於哪個狀態」，故不違規；但實作者需明白這些列未經 transition 驗證，不可當作真實帳務流程的範例。
+
+> **生成邏輯可測**：依 TDD，產生合規資料的純函式（`buildMembers` / `buildDeposits`）與 DB 接線分離，前者以 unit test 驗證 enum 合法、`amount > 0`、`reference_no`／`username` 唯一等不變量（`cmd/seed/gen_test.go`）。
 
 ---
 
