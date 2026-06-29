@@ -29,7 +29,7 @@ jobs:
             -e "s/ACCOUNT/${{ secrets.AWS_ACCOUNT_ID }}/g" \
             -e "s/REGION/ap-southeast-2/g" \
             -e "s/EC2_PRIVATE_IP/${{ vars.EC2_PRIVATE_IP }}/g" \
-            -e "s|REGISTRY/igs_backend:LATEST|${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-southeast-2.amazonaws.com/igs_backend:bootstrap|g" \
+            -e "s|REGISTRY/igs_backend:LATEST|${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-southeast-2.amazonaws.com/igs_backend:latest|g" \
             .aws/ecs-task-definition.json
 
       - name: Register task definition
