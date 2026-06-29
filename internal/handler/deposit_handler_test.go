@@ -628,3 +628,43 @@ func TestDepositHandler_UpdateStatus_InternalNoteTooLong_Returns400(t *testing.T
 	w := doRequest(r, http.MethodPatch, "/api/cms/deposit-records/"+rec.ID.String(), body)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
+
+// ─── additionalProperties:false + 分頁參數驗證（規格對齊） ────────────────────
+
+// TestDepositHandler_Create_UnknownField_Returns400 — OpenAPI CreateDepositRequest
+// additionalProperties:false：caller 夾帶 server-set 欄位（operator_id）→ 400。
+func TestDepositHandler_Create_UnknownField_Returns400(t *testing.T) {
+	svc := newFakeDepositService()
+	r, _ := setupDepositCMSRouter(t, svc)
+
+	body := map[string]any{
+		"player_id":      uuid.New().String(),
+		"amount":         1000,
+		"payment_method": "manual",
+		"operator_id":    uuid.New().String(), // 未知/server-set 欄位
+	}
+	w := doRequest(r, http.MethodPost, "/api/cms/deposit-records", body)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestDepositHandler_UpdateStatus_UnknownField_Returns400 — UpdateDepositRequest
+// additionalProperties:false：未知欄位 → 400。
+func TestDepositHandler_UpdateStatus_UnknownField_Returns400(t *testing.T) {
+	svc := newFakeDepositService()
+	rec := seedFakeDeposit(svc, model.DepositStatusPending, uuid.New())
+	r, _ := setupDepositCMSRouter(t, svc)
+
+	body := map[string]any{"status": "completed", "amount": 999} // amount 不可改
+	w := doRequest(r, http.MethodPatch, "/api/cms/deposit-records/"+rec.ID.String(), body)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestDepositHandler_List_InvalidPage_Returns400 — page 非整數 / < 1（OpenAPI minimum:1）→ 400。
+func TestDepositHandler_List_InvalidPage_Returns400(t *testing.T) {
+	for _, q := range []string{"page=0", "page=-1", "page=abc", "page_size=xyz"} {
+		svc := newFakeDepositService()
+		r, _ := setupDepositCMSRouter(t, svc)
+		w := doRequest(r, http.MethodGet, "/api/cms/deposit-records?"+q, nil)
+		assert.Equal(t, http.StatusBadRequest, w.Code, "query=%s", q)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -404,9 +405,41 @@ func TestCMSUserHandler_UpdateSelf_WeakPassword_Returns422(t *testing.T) {
 	svc.updateSelfErr = apperr.ErrWeakPassword
 	r := setupCMSUserRouter(t, svc, callerID, pkgjwt.RoleUser)
 
+	// 長度合法（≥8）但缺數字 → 通過 handler schema 檢查，由 service 回 422 weak_password。
 	w := doRequest(r, http.MethodPatch, "/api/cms/users/me", map[string]any{
 		"current_password": "oldpw123",
-		"new_password":     "weak",
+		"new_password":     "passwordonly",
 	})
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+}
+
+// TestCMSUserHandler_UpdateSelf_ShortNewPassword_Returns400 — new_password < 8（OpenAPI minLength:8 schema 違規）
+// → 400 invalid input，不應走到 service 的 422 weak_password。
+func TestCMSUserHandler_UpdateSelf_ShortNewPassword_Returns400(t *testing.T) {
+	svc := newFakeCMSUserService()
+	callerID := uuid.New().String()
+	svc.seed(callerID, "alice", "user")
+	svc.updateSelfErr = apperr.ErrWeakPassword // 即使 service 會回 422，handler 應先攔下回 400
+	r := setupCMSUserRouter(t, svc, callerID, pkgjwt.RoleUser)
+
+	w := doRequest(r, http.MethodPatch, "/api/cms/users/me", map[string]any{
+		"current_password": "oldpw123",
+		"new_password":     "ab1",
+	})
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestCMSUserHandler_UpdateSelf_TooLongNewPassword_Returns400 — new_password > 256（OpenAPI maxLength:256）→ 400。
+func TestCMSUserHandler_UpdateSelf_TooLongNewPassword_Returns400(t *testing.T) {
+	svc := newFakeCMSUserService()
+	callerID := uuid.New().String()
+	svc.seed(callerID, "alice", "user")
+	r := setupCMSUserRouter(t, svc, callerID, pkgjwt.RoleUser)
+
+	long := strings.Repeat("a1", 200) // 400 字元
+	w := doRequest(r, http.MethodPatch, "/api/cms/users/me", map[string]any{
+		"current_password": "oldpw123",
+		"new_password":     long,
+	})
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }

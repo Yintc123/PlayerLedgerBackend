@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/google/uuid"
 	"github.com/yintengching/playerledger/internal/dto"
 	"github.com/yintengching/playerledger/internal/model"
@@ -39,7 +40,12 @@ type createDepositRequest struct {
 
 func (h *DepositHandler) Create(c *gin.Context) {
 	var req createDepositRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	// 嚴格解析（OpenAPI additionalProperties:false：未知欄位 → 400），
+	// 再以 binding validator 跑 struct tag 驗證（required / uuid / min / max → 400 帶 details）。
+	if !decodeStrictJSON(c, &req) {
+		return
+	}
+	if err := binding.Validator.ValidateStruct(&req); err != nil {
 		HandleError(c, err)
 		return
 	}
@@ -132,8 +138,14 @@ var validDepositSorts = map[string]bool{
 }
 
 func (h *DepositHandler) List(c *gin.Context) {
-	page := parseIntQuery(c, "page", 1)
-	pageSize := parseIntQuery(c, "page_size", 20)
+	page, ok := parseIntQuery(c, "page", 1)
+	if !ok {
+		return
+	}
+	pageSize, ok := parseIntQuery(c, "page_size", 20)
+	if !ok {
+		return
+	}
 	if pageSize > 100 {
 		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
 		return
@@ -245,6 +257,16 @@ func (h *DepositHandler) UpdateStatus(c *gin.Context) {
 		return
 	}
 
+	// OpenAPI additionalProperties:false：未知欄位 → 400 invalid input。
+	for k := range rawBody {
+		switch k {
+		case "status", "internal_note", "display_note":
+		default:
+			httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+			return
+		}
+	}
+
 	input := service.UpdateDepositInput{}
 
 	if v, ok := rawBody["status"]; ok {
@@ -304,8 +326,14 @@ func (h *DepositHandler) ListMine(c *gin.Context) {
 		return
 	}
 
-	page := parseIntQuery(c, "page", 1)
-	pageSize := parseIntQuery(c, "page_size", 20)
+	page, ok := parseIntQuery(c, "page", 1)
+	if !ok {
+		return
+	}
+	pageSize, ok := parseIntQuery(c, "page_size", 20)
+	if !ok {
+		return
+	}
 	if pageSize > 50 {
 		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
 		return
@@ -341,16 +369,19 @@ func (h *DepositHandler) ListMine(c *gin.Context) {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-func parseIntQuery(c *gin.Context, key string, defaultVal int) int {
+// parseIntQuery 解析整數查詢參數。缺省回 defaultVal；提供但非整數或 < 1（OpenAPI minimum:1）
+// 則寫入 400 invalid input 並回 ok=false。
+func parseIntQuery(c *gin.Context, key string, defaultVal int) (int, bool) {
 	s := c.Query(key)
 	if s == "" {
-		return defaultVal
+		return defaultVal, true
 	}
 	v, err := strconv.Atoi(s)
 	if err != nil || v < 1 {
-		return defaultVal
+		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+		return 0, false
 	}
-	return v
+	return v, true
 }
 
 // parseDateQuery 解析 YYYY-MM-DD 日期。endOfDay=true 時設為 23:59:59 UTC。

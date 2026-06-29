@@ -40,8 +40,14 @@ func (h *CMSUserHandler) List(c *gin.Context) {
 		return
 	}
 
-	page := parseIntQuery(c, "page", 1)
-	pageSize := parseIntQuery(c, "page_size", 20)
+	page, ok := parseIntQuery(c, "page", 1)
+	if !ok {
+		return
+	}
+	pageSize, ok := parseIntQuery(c, "page_size", 20)
+	if !ok {
+		return
+	}
 	if pageSize > 100 {
 		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
 		return
@@ -220,6 +226,11 @@ func (h *CMSUserHandler) UpdateSelf(c *gin.Context) {
 		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
 		return
 	}
+	// OpenAPI schema 長度約束 → 400 invalid input（密碼複雜度規則仍由 service 回 422 weak_password）。
+	if !validLenPtr(req.CurrentPassword, 1, 256) || !validLenPtr(req.NewPassword, 8, 256) {
+		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+		return
+	}
 
 	updated, err := h.svc.UpdateSelf(c.Request.Context(), claims.UserID(), service.UpdateSelfInput{
 		Username:        req.Username,
@@ -255,4 +266,14 @@ func validUsernamePtr(u *string) bool {
 	}
 	n := len([]rune(*u))
 	return n >= 3 && n <= 64
+}
+
+// validLenPtr 驗證字串長度落在 [min, max]（nil 視為合法，代表欄位缺席）。
+// 密碼類欄位以位元組長度計（與 OpenAPI minLength/maxLength 對齊）。
+func validLenPtr(s *string, min, max int) bool {
+	if s == nil {
+		return true
+	}
+	n := len(*s)
+	return n >= min && n <= max
 }

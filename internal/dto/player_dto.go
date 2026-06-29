@@ -35,7 +35,7 @@ func FromMember(m *model.Member, mask bool) PlayerDTO {
 		ExternalID:   m.ExternalID,
 		DisplayName:  m.DisplayName,
 		Status:       string(m.Status),
-		RegisteredAt: m.CreatedAt.Format(time.RFC3339),
+		RegisteredAt: m.CreatedAt.UTC().Format(time.RFC3339),
 	}
 	if m.Email != nil {
 		v := *m.Email
@@ -52,7 +52,7 @@ func FromMember(m *model.Member, mask bool) PlayerDTO {
 		dto.Phone = &v
 	}
 	if m.LastActiveAt != nil {
-		v := m.LastActiveAt.Format(time.RFC3339)
+		v := m.LastActiveAt.UTC().Format(time.RFC3339)
 		dto.LastActiveAt = &v
 	}
 	return dto

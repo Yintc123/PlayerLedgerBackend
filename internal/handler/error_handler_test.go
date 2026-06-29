@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +56,36 @@ func TestHandleError_CMSUserSentinels(t *testing.T) {
 		{"ErrCannotChangeOwnRole", apperr.ErrCannotChangeOwnRole, http.StatusUnprocessableEntity, "cannot_change_own_role"},
 		{"ErrCurrentPasswordMismatch", apperr.ErrCurrentPasswordMismatch, http.StatusUnauthorized, "current_password_mismatch"},
 	})
+}
+
+// TestHandleError_ValidationDetailsUseJSONFieldName 驗證 validation 錯誤的 details[].field
+// 使用 JSON 欄位名（snake_case），對齊 OpenAPI ErrorResponse.details 慣例（非 Go struct 名）。
+func TestHandleError_ValidationDetailsUseJSONFieldName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	type body struct {
+		ClientID string `json:"client_id" binding:"required"`
+	}
+
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	var b body
+	err := ctx.ShouldBindJSON(&b)
+	require.Error(t, err)
+	HandleError(ctx, err)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var resp struct {
+		Details []struct {
+			Field string `json:"field"`
+		} `json:"details"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Details)
+	assert.Equal(t, "client_id", resp.Details[0].Field)
 }
 
 // TestHandleError_UseLogoutInstead 驗證撤銷自己當前 family 的 sentinel 映射為

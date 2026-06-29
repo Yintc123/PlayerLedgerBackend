@@ -49,8 +49,8 @@ func FromDepositRecord(r *model.DepositRecord) DepositRecordDTO {
 		InternalNote:  r.InternalNote,
 		DisplayNote:   r.DisplayNote,
 		ReferenceNo:   r.ReferenceNo,
-		CreatedAt:     r.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:     r.UpdatedAt.Format(time.RFC3339),
+		CreatedAt:     r.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:     r.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 	if r.OperatorID != nil {
 		s := r.OperatorID.String()
@@ -68,7 +68,7 @@ func FromDepositRecordPublic(r *model.DepositRecord) DepositRecordPublicDTO {
 		Status:        string(r.Status),
 		PaymentMethod: string(r.PaymentMethod),
 		DisplayNote:   r.DisplayNote,
-		CreatedAt:     r.CreatedAt.Format(time.RFC3339),
+		CreatedAt:     r.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
