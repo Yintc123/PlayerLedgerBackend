@@ -1,0 +1,52 @@
+# syntax=docker/dockerfile:1.7
+#
+# AWS Lambda 容器映像（API Gateway + Lambda）。
+# 用 AWS Lambda Web Adapter（LWA）讓現有 HTTP server 原封不動跑在 Lambda 上：
+# LWA 以 external extension 身分當 runtime 代理，把 Lambda event 轉成打到
+# 127.0.0.1:$AWS_LWA_PORT 的一般 HTTP 請求。**不需改任何 Go 程式碼**。
+# 與生產用 ./Dockerfile（ECS/Fargate）並存，互不影響。
+
+# ===== builder（與 ./Dockerfile 一致）=====
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG COMMIT=unknown
+ENV CGO_ENABLED=0 GOOS=linux
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build \
+      -trimpath \
+      -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT}" \
+      -tags=netgo,osusergo \
+      -o /out/server ./cmd/server
+
+# ===== runtime =====
+FROM gcr.io/distroless/static-debian12:nonroot
+
+# Lambda Web Adapter：放到 /opt/extensions，Lambda 會自動把它當 extension 啟動。
+# 版本確認：https://github.com/awslabs/aws-lambda-web-adapter/releases
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.1 /lambda-adapter /opt/extensions/lambda-adapter
+
+USER nonroot:nonroot
+WORKDIR /app
+
+COPY --from=builder --chown=nonroot:nonroot /out/server /app/server
+COPY --from=builder --chown=nonroot:nonroot /src/migrations /app/migrations
+
+# app 監聽埠（config 的 PORT 為 required）；LWA 預設也讀 AWS_LWA_PORT=8080。
+ENV PORT=8080 \
+    AWS_LWA_PORT=8080 \
+    AWS_LWA_READINESS_CHECK_PATH=/health \
+    AWS_LWA_INVOKE_MODE=buffered
+
+# 注意：Lambda 不送 SIGINT/SIGTERM 給長駐 loop 的時機與 ECS 不同；
+# graceful shutdown（main.go 的 signal 段）在 Lambda 環境回收時可能不會完整執行，
+# 故 audit / log 一律走 stdout（LOG_AUDIT_PATH 留空）→ CloudWatch。
+ENTRYPOINT ["/app/server"]

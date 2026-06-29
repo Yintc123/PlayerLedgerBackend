@@ -1,35 +1,38 @@
-name: CI
+name: CI/CD
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
-# Least privilege：CI 預設只能讀 repo，無法 push/create issues 等。
-# 若日後加 release job 等需寫權限，在該 job 內覆寫 permissions。
+# Least privilege：預設只讀 repo。需要 OIDC（id-token）的 CD job 各自於 job 層覆寫。
 permissions:
   contents: read
 
 # 同 branch / 同 PR 新 push 自動 cancel 前面尚未完成的 run，節省 Actions minutes。
-# main 與其他分支分組（main push 不互相 cancel，避免 release 中斷）。
+# main 不互相 cancel（避免部署中途被打斷）。
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-cd-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   GO_VERSION: '1.25'
   # v2.x 必要：v1.61 依賴 x/tools@v0.23 含 Go 1.24+ 禁止的負數陣列長度，build 不過。
-  # v2 config 格式不同（version: "2" + linters.settings + formatters 分離），見 .golangci.yml
   GOLANGCI_LINT_VERSION: v2.5.0
   REDOCLY_VERSION: 1.25.0
-  # govulncheck v1.1.x 與 gosec v2.21.x 都拖 x/tools@v0.23，Go 1.25 build 不過
-  # （同 golangci-lint v1.61 的根因）。CI 安全掃描 tool 用 @latest 拉當前 stable，
-  # 接受跨次 run 微小版本飄移以換來自動跟上 vulnerability DB 更新。
   GOVULNCHECK_VERSION: latest
   GOSEC_VERSION: latest
+  # ── CD（對齊前端 PlayerLedgerFrontend/.github/workflows/ci.yml 設定）──
+  IMAGE_NAME: igs_backend
+  AWS_REGION: ap-southeast-2
+  ECS_CLUSTER: warmhearted-crocodile-18gqvo-jko-cluster
+  ECS_SERVICE: playerledger-backend
+  CONTAINER_NAME: backend
 
 jobs:
+  # ════════════════════════════ CI ════════════════════════════
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -141,8 +144,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      # govulncheck 與 gosec 都用 `go install` — 統一從 env 取版本，
-      # 避免「uses: 不支援 env context」的限制；且不需第三方 action 信任。
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
@@ -166,3 +167,105 @@ jobs:
           cache: true
       - name: Build binary
         run: go build ./cmd/server/...
+
+  # ════════════════════════════ CD ════════════════════════════
+  # 只在 main push / 手動觸發；PR 不部署。CI 全綠後才接續。
+  build-image:
+    name: Build & Push Image
+    needs: [lint, schema-lint, test-unit, test-integration, security, build]
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image-uri: ${{ steps.image.outputs.uri }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.ecr-login.outputs.registry }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ github.sha }}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push (with SBOM + provenance)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VERSION=${{ github.sha }}
+            COMMIT=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set image URI
+        id: image
+        run: echo "uri=${{ steps.ecr-login.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build-image
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 同前端：committed task def 的 placeholder 於部署時以 sed 填入（帳號/region/VM IP）。
+      # image 由下一步 render 覆寫，這裡不處理。
+      - name: Substitute placeholders in task definition
+        run: |
+          sed -i \
+            -e "s/ACCOUNT/${{ secrets.AWS_ACCOUNT_ID }}/g" \
+            -e "s/REGION/${{ env.AWS_REGION }}/g" \
+            -e "s/EC2_PRIVATE_IP/${{ vars.EC2_PRIVATE_IP }}/g" \
+            .aws/ecs-task-definition.json
+
+      - name: Render new image into task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: .aws/ecs-task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ needs.build-image.outputs.image-uri }}
+
+      - name: Deploy to ECS (Staging)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          wait-for-service-stability: true
+      # 後端是內部 only（無公網 ALB），不做 public health check；
+      # 以 wait-for-service-stability 判定 task 是否健康上線。

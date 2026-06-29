@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  PlayerLedger Backend — API Gateway (HTTP API) + Lambda 試作。
+  以 Lambda Web Adapter 包裝現有 Gin HTTP server（容器映像，無程式碼改動）。
+  正式生產環境建議 ECS/Fargate（見 .aws/ecs-task-definition.json）；本檔為 Lambda 試水溫用。
+
+Parameters:
+  AppEnv:
+    Type: String
+    Default: staging
+    AllowedValues: [dev, staging, prod]
+  AllowedOrigins:
+    Type: String
+    Description: CORS 允許來源（逗號分隔）
+    Default: http://localhost:3000
+  VpcSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Lambda 掛載的私有子網（需能連到 RDS / ElastiCache）
+  VpcSecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Lambda 的 security group（需被 RDS / Redis SG 放行）
+  DbHost:
+    Type: String
+    Description: RDS（建議走 RDS Proxy）端點
+  RedisHost:
+    Type: String
+    Description: ElastiCache / Redis 端點
+  PgRedisSecretName:
+    Type: String
+    Default: jko_vm_pg_redis_1
+    Description: 與前端共用的 pg+redis secret（含 POSTGRES_* / REDIS_PASSWORD keys）
+  BackendSecretName:
+    Type: String
+    Default: playerledger-backend/production
+    Description: 後端專屬 secret（JWT_SECRET / JWT_REFRESH_SECRET / ADMIN_PASSWORD keys）
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 1024
+
+Resources:
+  BackendFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile.lambda
+      DockerTag: latest
+    Properties:
+      PackageType: Image
+      Architectures: [x86_64]
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref VpcSecurityGroupIds
+      Policies:
+        # VPC 內執行所需 ENI 權限；CloudWatch Logs 亦需出網路（NAT 或 VPC endpoint）
+        - AWSLambdaVPCAccessExecutionRole
+      Events:
+        Root:
+          Type: HttpApi
+          Properties:
+            Path: /
+            Method: ANY
+        Proxy:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+      Environment:
+        Variables:
+          # ── App / Server（非機敏，比照 .aws/ecs-task-definition.json）──
+          APP_ENV: !Ref AppEnv
+          PORT: "8080"
+          GIN_MODE: release
+          ALLOWED_ORIGINS: !Ref AllowedOrigins
+          ALLOW_CREDENTIALS: "true"
+          # API Gateway 在前，IP 限流要拿到真實 client IP 須信任其轉發；
+          # 0.0.0.0/0 為「全信任」最寬鬆設定，僅試作用，正式請收斂為 APIGW 來源範圍。
+          TRUSTED_PROXIES: 0.0.0.0/0
+          # ── Database（Lambda 特化：連線數壓低 + 關 prepared stmt 以利 RDS Proxy）──
+          DB_HOST: !Ref DbHost
+          DB_PORT: "5432"
+          DB_SSLMODE: require
+          DB_MAX_OPEN_CONNS: "2"
+          DB_MAX_IDLE_CONNS: "1"
+          DB_PREPARE_STMT: "false"
+          # ── Redis ──
+          REDIS_HOST: !Ref RedisHost
+          REDIS_PORT: "6379"
+          REDIS_DB: "0"
+          # ── Logging（一律 stdout → CloudWatch）──
+          LOG_LEVEL: info
+          LOG_FORMAT: json
+          LOG_SERVICE: playerledger
+          # ── Rate limit ──
+          RATE_LIMIT_ENABLED: "true"
+          RATE_LIMIT_IP_PERIOD: "60"
+          RATE_LIMIT_IP_MAX: "60"
+          RATE_LIMIT_USER_PERIOD: "60"
+          RATE_LIMIT_USER_MAX: "300"
+          # ── Metrics：Lambda 不適用 Prometheus pull，關閉（見 README-lambda.md）──
+          METRICS_ENABLED: "false"
+          # ── JWT（非機敏部分）──
+          JWT_ISSUER: playerledger
+          JWT_ACCESS_TTL: "900"
+          JWT_GRACE_WINDOW: "10"
+          JWT_CLOCK_SKEW_LEEWAY: "30"
+          BCRYPT_COST: "12"
+          ADMIN_USERNAME: admin
+          # ── Secrets（CloudFormation 部署時動態解析；比照 ECS 的 secret 對應）──
+          # 注意：dynamic reference 會把值「烘焙」成純 Lambda env var
+          #（可被 lambda:GetFunctionConfiguration 讀到）。正式環境改用
+          # AWS Parameters and Secrets Lambda Extension 於 runtime 取用。
+          DB_USER: !Sub "{{resolve:secretsmanager:${PgRedisSecretName}:SecretString:POSTGRES_USER}}"
+          DB_PASSWORD: !Sub "{{resolve:secretsmanager:${PgRedisSecretName}:SecretString:POSTGRES_PASSWORD}}"
+          DB_NAME: !Sub "{{resolve:secretsmanager:${PgRedisSecretName}:SecretString:POSTGRES_DB}}"
+          REDIS_PASSWORD: !Sub "{{resolve:secretsmanager:${PgRedisSecretName}:SecretString:REDIS_PASSWORD}}"
+          JWT_SECRET: !Sub "{{resolve:secretsmanager:${BackendSecretName}:SecretString:JWT_SECRET}}"
+          JWT_REFRESH_SECRET: !Sub "{{resolve:secretsmanager:${BackendSecretName}:SecretString:JWT_REFRESH_SECRET}}"
+          ADMIN_PASSWORD: !Sub "{{resolve:secretsmanager:${BackendSecretName}:SecretString:ADMIN_PASSWORD}}"
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway HTTP API base URL（端點掛在 /api/*）
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  FunctionArn:
+    Value: !GetAtt BackendFunction.Arn
