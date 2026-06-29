@@ -60,27 +60,32 @@ func RunMigrations(cfg config.DatabaseConfig) error {
 	return nil
 }
 
-// DropAll 刪除資料庫中所有 migration 建立的物件（含 schema_migrations 版本表），
-// 使後續 RunMigrations 能從乾淨狀態重建整個 schema。
+// DropAll 刪除資料庫中所有 migration 建立的物件（table、自訂 ENUM type、function、
+// trigger、index 與 schema_migrations 版本表），使後續 RunMigrations 能從乾淨狀態
+// 重建整個 schema。
+//
+// 實作以 `DROP SCHEMA public CASCADE; CREATE SCHEMA public` 重建整個 public schema，
+// 而非 golang-migrate 的 m.Drop()——後者只刪 table，會殘留自訂 ENUM type，導致重複
+// reset 的第二輪在 CREATE TYPE 撞 "already exists"（CI 每次部署 SEED_RESET 會踩到）。
 //
 // 僅供 seed 的「先 drop 全部表、再重新倒入假資料」流程使用（dev / staging）。
 // 此操作具破壞性會清空所有資料；正式環境嚴禁呼叫——呼叫端（cmd/seed）已以
 // APP_ENV=prod 中止把關，本函式不額外判斷。
 func DropAll(cfg config.DatabaseConfig) error {
-	src, err := iofs.New(migrations.FS, ".")
+	db, err := Connect(cfg)
 	if err != nil {
-		return fmt.Errorf("migration source: %w", err)
+		return fmt.Errorf("connect for drop: %w", err)
 	}
-
-	dsnURL := buildMigrateDSN(cfg)
-	m, err := migrate.NewWithSourceInstance("iofs", src, dsnURL.String())
+	sqlDB, err := db.DB()
 	if err != nil {
-		return fmt.Errorf("migrate new (dsn=%s): %w", redactedDSN(dsnURL), err)
+		return fmt.Errorf("acquire sql db for drop: %w", err)
 	}
-	defer closeMigrate(m)
+	defer sqlDB.Close()
 
-	if err := m.Drop(); err != nil {
-		return fmt.Errorf("migrate drop: %w", err)
+	// CASCADE 一併清掉 schema 內的所有物件（含 enum type / function / trigger）。
+	// 重建 public schema 後，連線使用者（dev/staging 的 DB owner）即為其 owner。
+	if _, err := sqlDB.Exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public"); err != nil {
+		return fmt.Errorf("reset public schema: %w", err)
 	}
 
 	return nil
