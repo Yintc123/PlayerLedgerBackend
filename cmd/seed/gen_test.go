@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"testing"
 
 	"github.com/google/uuid"
@@ -58,6 +59,52 @@ func TestBuildDeposits_Count50_AllCompliantAndUniqueRef(t *testing.T) {
 		assert.False(t, refs[*r.ReferenceNo], "reference_no 必須唯一：%s", *r.ReferenceNo)
 		refs[*r.ReferenceNo] = true
 	}
+}
+
+func TestBuildDeposits_RandomFields_StayValidAndVaried(t *testing.T) {
+	members := buildMembers(20, "h")
+	for i := range members {
+		members[i].ID = uuid.New()
+	}
+	operatorID := uuid.New()
+
+	recs := buildDeposits(50, members, &operatorID)
+
+	amounts := make(map[int64]bool)
+	statuses := make(map[model.DepositStatus]bool)
+	for _, r := range recs {
+		// 隨機但有效：amount 落在 100..1,000,000 的百元整數
+		assert.GreaterOrEqual(t, r.Amount, int64(100))
+		assert.LessOrEqual(t, r.Amount, int64(seedMaxAmountUnits*100))
+		assert.Zero(t, r.Amount%100, "amount 應為百元整數：%d", r.Amount)
+
+		// 有 operator 時 operator_ip 為合法 IP、internal_note 有值
+		require.NotNil(t, r.OperatorIP, "有 operator 時 operator_ip 不應為空")
+		assert.NotNil(t, net.ParseIP(*r.OperatorIP), "operator_ip 必須為合法 INET：%s", *r.OperatorIP)
+		require.NotNil(t, r.InternalNote)
+		require.NotNil(t, r.DisplayNote)
+
+		amounts[r.Amount] = true
+		statuses[r.Status] = true
+	}
+
+	// 證明確實「隨機」：50 筆不會全為同一金額、同一狀態
+	assert.Greater(t, len(amounts), 1, "amount 應有變化（隨機），而非全部相同")
+	assert.Greater(t, len(statuses), 1, "status 應有變化（隨機），而非全部相同")
+}
+
+func TestBuildDeposits_FixedSeed_Reproducible(t *testing.T) {
+	members := buildMembers(20, "h")
+	for i := range members {
+		members[i].ID = uuid.New()
+	}
+	operatorID := uuid.New()
+
+	first := buildDeposits(50, members, &operatorID)
+	second := buildDeposits(50, members, &operatorID)
+
+	// 固定種子 → 兩次產生完全一致，CI 重跑可重現
+	assert.Equal(t, first, second)
 }
 
 func TestBuildDeposits_NilOperator_LeavesOperatorFieldsNull(t *testing.T) {

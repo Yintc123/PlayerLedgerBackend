@@ -8,6 +8,9 @@
 // 使用：載入 .env 後執行
 //
 //	APP_ENV=dev go run ./cmd/seed
+//
+// 環境變數 SEED_RESET=true/1：先 drop 全部表再重建 schema 並重新倒入（破壞性，dev/staging 限定，
+// prod 仍由 APP_ENV 把關拒絕）。CI/CD 以此達成「drop 後重新倒入」。
 package main
 
 import (
@@ -24,6 +27,7 @@ import (
 	"github.com/yintengching/playerledger/internal/apperr"
 	"github.com/yintengching/playerledger/internal/model"
 	"github.com/yintengching/playerledger/internal/repository"
+	"github.com/yintengching/playerledger/internal/service"
 	"github.com/yintengching/playerledger/pkg/auth/hasher"
 	"github.com/yintengching/playerledger/pkg/database"
 	"github.com/yintengching/playerledger/pkg/logger"
@@ -52,7 +56,19 @@ func main() {
 		log.Fatal("failed to connect database", zap.Error(err))
 	}
 
-	// 確保 schema 已存在（fresh DB 友善）。
+	// SEED_RESET=true/1：先 drop 全部表，再由下方 migrations 重建 schema、重新倒入假資料。
+	// 具破壞性（清空整庫），僅供 dev / staging；prod 已於上方 APP_ENV 把關中止。
+	// 供 CI/CD「drop 後重新倒入」流程使用（見 .github/workflows/ci.yml 的 seed-db job）。
+	if reset := os.Getenv("SEED_RESET"); reset == "true" || reset == "1" {
+		log.Warn("SEED_RESET enabled: dropping ALL tables before reseeding",
+			zap.String("env", cfg.App.Env))
+		if err := database.DropAll(cfg.Database); err != nil {
+			log.Fatal("failed to drop database before reseed", zap.Error(err))
+		}
+		log.Info("all tables dropped; recreating schema via migrations")
+	}
+
+	// 確保 schema 已存在（fresh DB / reset 後友善）。
 	if err := database.RunMigrations(cfg.Database); err != nil {
 		log.Fatal("failed to run migrations", zap.Error(err))
 	}
@@ -66,7 +82,14 @@ func main() {
 		log.Fatal("failed to hash seed password", zap.Error(err))
 	}
 
-	// ── 2. Upsert 20 筆 members（取回真實 ID 供 deposit FK 使用）──
+	// ── 2. 確保 admin 存在（reset 會清掉 server 建立的 admin；此處冪等重建，
+	//        讓 deposit 有 operator 可用，並使資料庫 reset 後即可登入）──
+	cmsUserRepo := repository.NewCMSUserRepository(db)
+	if _, err := service.EnsureAdminFromConfig(ctx, cmsUserRepo, h, cfg.Admin.Username, cfg.Admin.Password); err != nil {
+		log.Fatal("failed to ensure admin", zap.Error(err))
+	}
+
+	// ── 3. Upsert 20 筆 members（取回真實 ID 供 deposit FK 使用）──
 	members, createdMembers, err := upsertMembers(ctx, db, buildMembers(memberCount, passwordHash))
 	if err != nil {
 		log.Fatal("failed to seed members", zap.Error(err))
@@ -76,10 +99,10 @@ func main() {
 		zap.Int("total", len(members)),
 	)
 
-	// ── 3. operator 取現有 admin（若有），否則 deposit 的 operator 留空 ──
-	operatorID := lookupAdminOperator(ctx, log, repository.NewCMSUserRepository(db), cfg.Admin.Username)
+	// ── 4. operator 取現有 admin（若有），否則 deposit 的 operator 留空 ──
+	operatorID := lookupAdminOperator(ctx, log, cmsUserRepo, cfg.Admin.Username)
 
-	// ── 4. 寫入 50 筆 deposit_records（reference_no 衝突即視為已存在而略過）──
+	// ── 5. 寫入 50 筆 deposit_records（reference_no 衝突即視為已存在而略過）──
 	depositRepo := repository.NewDepositRecordRepository(db)
 	deposits := buildDeposits(depositCount, members, operatorID)
 	inserted, skipped, err := insertDeposits(ctx, db, depositRepo, deposits)

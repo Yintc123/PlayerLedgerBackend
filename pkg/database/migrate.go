@@ -41,8 +41,54 @@ func RunMigrations(cfg config.DatabaseConfig) error {
 		return fmt.Errorf("migration source: %w", err)
 	}
 
-	// 构造 DSN：使用 url.URL 确保密码特殊字符被正确 escape
-	dsnURL := &url.URL{
+	// 构造 migrate 實例
+	dsnURL := buildMigrateDSN(cfg)
+	m, err := migrate.NewWithSourceInstance("iofs", src, dsnURL.String())
+	if err != nil {
+		// %w 会把 dsn 含密码一起写到 log；用 redactedDSN 取代
+		return fmt.Errorf("migrate new (dsn=%s): %w", redactedDSN(dsnURL), err)
+	}
+
+	// 延迟關閉：记录任何 cleanup 錯誤但不中断執行
+	defer closeMigrate(m)
+
+	// 執行 pending migrations
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("migrate up: %w", err)
+	}
+
+	return nil
+}
+
+// DropAll 刪除資料庫中所有 migration 建立的物件（含 schema_migrations 版本表），
+// 使後續 RunMigrations 能從乾淨狀態重建整個 schema。
+//
+// 僅供 seed 的「先 drop 全部表、再重新倒入假資料」流程使用（dev / staging）。
+// 此操作具破壞性會清空所有資料；正式環境嚴禁呼叫——呼叫端（cmd/seed）已以
+// APP_ENV=prod 中止把關，本函式不額外判斷。
+func DropAll(cfg config.DatabaseConfig) error {
+	src, err := iofs.New(migrations.FS, ".")
+	if err != nil {
+		return fmt.Errorf("migration source: %w", err)
+	}
+
+	dsnURL := buildMigrateDSN(cfg)
+	m, err := migrate.NewWithSourceInstance("iofs", src, dsnURL.String())
+	if err != nil {
+		return fmt.Errorf("migrate new (dsn=%s): %w", redactedDSN(dsnURL), err)
+	}
+	defer closeMigrate(m)
+
+	if err := m.Drop(); err != nil {
+		return fmt.Errorf("migrate drop: %w", err)
+	}
+
+	return nil
+}
+
+// buildMigrateDSN 以 url.URL 构造 migrate 連線 DSN，确保密码特殊字符被正确 escape。
+func buildMigrateDSN(cfg config.DatabaseConfig) *url.URL {
+	return &url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(cfg.User, cfg.Password),
 		Host:   fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -52,31 +98,17 @@ func RunMigrations(cfg config.DatabaseConfig) error {
 			"statement_timeout": {strconv.Itoa(int(migrationStatementTimeout.Milliseconds()))},
 		}.Encode(),
 	}
+}
 
-	// 构造 migrate 實例
-	m, err := migrate.NewWithSourceInstance("iofs", src, dsnURL.String())
-	if err != nil {
-		// %w 会把 dsn 含密码一起写到 log；用 redactedDSN 取代
-		return fmt.Errorf("migrate new (dsn=%s): %w", redactedDSN(dsnURL), err)
+// closeMigrate 關閉 migrate 實例，记录任何 cleanup 錯誤但不中断執行。
+func closeMigrate(m *migrate.Migrate) {
+	srcErr, dbErr := m.Close()
+	if srcErr != nil {
+		logger.L().Warn("migrate source close error", zap.Error(srcErr))
 	}
-
-	// 延迟關閉：记录任何 cleanup 錯誤但不中断執行
-	defer func() {
-		srcErr, dbErr := m.Close()
-		if srcErr != nil {
-			logger.L().Warn("migrate source close error", zap.Error(srcErr))
-		}
-		if dbErr != nil {
-			logger.L().Warn("migrate db close error", zap.Error(dbErr))
-		}
-	}()
-
-	// 執行 pending migrations
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return fmt.Errorf("migrate up: %w", err)
+	if dbErr != nil {
+		logger.L().Warn("migrate db close error", zap.Error(dbErr))
 	}
-
-	return nil
 }
 
 // redactedDSN 把 password 替换成 "***" 后序列化，给 error / log 用。
