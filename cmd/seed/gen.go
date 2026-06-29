@@ -15,7 +15,7 @@ const (
 	seedMemberPrefix = "seed_player_"
 	seedRefPrefix    = "SEED-REF-"
 	// seedPassword 為所有 seed 玩家共用的固定密碼，僅供 dev/staging 登入測試。
-	seedPassword = "Seed-Player-Pw1"
+	seedPassword = "Seed-Player-Pw1" // #nosec G101 -- 固定 dev/staging seed 密碼，非正式憑證
 )
 
 // seedStatuses / seedMethods 列出所有合法 enum，round-robin 覆蓋以利前端測試各狀態與付款方式。
