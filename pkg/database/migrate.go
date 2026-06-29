@@ -80,7 +80,11 @@ func DropAll(cfg config.DatabaseConfig) error {
 	if err != nil {
 		return fmt.Errorf("acquire sql db for drop: %w", err)
 	}
-	defer sqlDB.Close()
+	defer func() {
+		if cerr := sqlDB.Close(); cerr != nil {
+			logger.L().Warn("drop: sql db close error", zap.Error(cerr))
+		}
+	}()
 
 	// CASCADE 一併清掉 schema 內的所有物件（含 enum type / function / trigger）。
 	// 重建 public schema 後，連線使用者（dev/staging 的 DB owner）即為其 owner。
