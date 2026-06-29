@@ -74,7 +74,7 @@ type FamilyStore interface {
 		graceWindow time.Duration) (RotateResult, *FamilyState, error)
 
 	// Revoke：登出单一 family。回传 found 表示该 family 撤销前是否存在
-	//（false = fid 不存在，caller 据此回 404；对齐 OpenAPI / ADR 007）。
+	// （false = fid 不存在，caller 据此回 404；对齐 OpenAPI / ADR 007）。
 	Revoke(ctx context.Context, userID, fid string) (found bool, err error)
 
 	// RevokeAll：登出该 user 所有 family（改密码 / 强制全装置登出）
