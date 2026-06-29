@@ -104,6 +104,10 @@ func (r *fakeMemberRepoDeposit) FindByID(_ context.Context, id uuid.UUID) (*mode
 	return m, nil
 }
 
+func (r *fakeMemberRepoDeposit) Search(_ context.Context, _ repository.PlayerSearchFilter) ([]*model.Member, error) {
+	return nil, nil
+}
+
 // captureAudit 記錄寫入的 audit event，供測試斷言。
 type captureAudit struct {
 	events []audit.AuthEvent

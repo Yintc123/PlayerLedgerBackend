@@ -115,6 +115,10 @@ func (r *fakeMemberRepository) FindByID(_ context.Context, id uuid.UUID) (*model
 	return nil, apperr.ErrNotFound
 }
 
+func (r *fakeMemberRepository) Search(_ context.Context, _ repository.PlayerSearchFilter) ([]*model.Member, error) {
+	return nil, nil
+}
+
 type fakeHasher struct{}
 
 func (h *fakeHasher) Hash(plain string) (string, error) {

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: PlayerLedger Backend API
-  version: 1.12.0
+  version: 1.13.0
   description: |
     PlayerLedger Backend HTTP API。
     完整認證設計見 [ADR 007](../docs/adr/007-refresh-token-rotation-and-replay-detection.md)。
@@ -24,6 +24,8 @@ tags:
     description: 儲值紀錄管理（CMS 後台 + 玩家自助查詢）
   - name: cms-users
     description: CMS 內部人員管理（讀 / 改 / 軟刪 / 自助改密碼）
+  - name: players
+    description: 玩家查詢（CMS 後台唯讀；搜尋 + 詳情，PII 依角色遮罩）
 
 security:
   - bearerAuth: []
@@ -474,6 +476,75 @@ paths:
                     success: false
                     request_id: 0193b3f4-1234-7abc-9def-0123456789ab
                     error: invalid_transition
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  # =============================================================
+  # Players — 玩家查詢（players-api.md）
+  # 權限：utype == cms，全 CMS staff（admin/user/viewer）可讀；viewer 的 email/phone 遮罩。
+  # 唯讀；搜尋採 keyset cursor（非 page/page_size）。
+  # =============================================================
+  /cms/players:
+    get:
+      tags: [players]
+      summary: 搜尋玩家（全 CMS staff；viewer PII 遮罩）
+      description: |
+        依條件搜尋玩家，至少需提供一個搜尋條件（player_id / external_id / display_name / email / phone），
+        全空 → 400 `invalid input`。多條件以 AND 組合。
+        分頁採 keyset cursor（`cursor` opaque，底層為 `(created_at, id)`），回傳 `next_cursor`，無 `meta`。
+        viewer 角色的 `email` / `phone` 會被遮罩；admin / user 為完整值。
+      operationId: searchPlayers
+      parameters:
+        - { name: player_id,    in: query, schema: { type: string, format: uuid }, description: 精確比對 }
+        - { name: external_id,  in: query, schema: { type: string, maxLength: 64 }, description: 精確比對 }
+        - { name: display_name, in: query, schema: { type: string, maxLength: 64 }, description: 前綴（大小寫不敏感、NFC 正規化） }
+        - { name: email,        in: query, schema: { type: string, maxLength: 255 }, description: '前綴比對（lowercase）。定案語意見 players-api.md §4.1' }
+        - { name: phone,        in: query, schema: { type: string, maxLength: 32 }, description: '正規化後精確比對（canonical E.164）' }
+        - { name: cursor,       in: query, schema: { type: string }, description: 'opaque keyset cursor；綁定當次搜尋條件，變更條件須重置。缺省為第一頁' }
+        - { name: limit,        in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        '200':
+          description: 查詢成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlayerSearchResultEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /cms/players/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [players]
+      summary: 取玩家詳情（全 CMS staff；viewer PII 遮罩）
+      operationId: getPlayer
+      responses:
+        '200':
+          description: 查詢成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlayerEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -1012,6 +1083,60 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/CMSUserDTO'
+
+    # ---- 玩家查詢 ----
+    PlayerStatus:
+      type: string
+      enum: [active, frozen, closed]
+      description: 帳號狀態。本期一律 active（無變更端點）；frozen / closed 為未來範圍。
+
+    PlayerDTO:
+      type: object
+      description: |
+        玩家查詢結果。`email` / `phone` 對 viewer 角色遮罩（admin / user 為完整值）。
+        欄位皆顯式輸出（含 null），不用 omitempty，確保前端型別穩定。
+        不暴露 username / password_hash。
+      required: [player_id, external_id, display_name, email, phone, status, registered_at, last_active_at]
+      properties:
+        player_id:      { type: string, format: uuid, description: "= members.id" }
+        external_id:    { type: [string, 'null'], description: 外部遊戲系統識別碼 }
+        display_name:   { type: string }
+        email:          { type: [string, 'null'], description: "viewer 遮罩為 a***@example.com" }
+        phone:          { type: [string, 'null'], description: "viewer 遮罩為 +886***5678" }
+        status:         { $ref: '#/components/schemas/PlayerStatus' }
+        registered_at:  { type: string, format: date-time, description: "RFC3339 UTC（= members.created_at）" }
+        last_active_at: { type: [string, 'null'], format: date-time, description: 本期恆為 null（無寫入來源） }
+      additionalProperties: false
+
+    PlayerSearchResult:
+      type: object
+      required: [players, next_cursor]
+      properties:
+        players:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlayerDTO'
+        next_cursor:
+          type: [string, 'null']
+          description: opaque keyset cursor；最後一頁為 null
+      additionalProperties: false
+
+    PlayerEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PlayerDTO'
+
+    # 搜尋結果不含 meta（非 page 分頁），data 為含 next_cursor 的物件
+    PlayerSearchResultEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PlayerSearchResult'
 
     # ---- 通用錯誤回應 ----
     ErrorResponse:

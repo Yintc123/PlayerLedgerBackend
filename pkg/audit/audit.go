@@ -39,6 +39,10 @@ const (
 	EventDepositCreated       EventType = "deposit.created"
 	EventDepositStatusChanged EventType = "deposit.status_changed"
 	EventDepositNoteUpdated   EventType = "deposit.note_updated"
+
+	// players-api §9：玩家查詢操作事件（query 去敏，不記 PII 原值）。
+	EventPlayerSearch EventType = "players.search"
+	EventPlayerRead   EventType = "players.read"
 )
 
 // AuthEvent 安全事件的結構化內容（§18.3.2）。

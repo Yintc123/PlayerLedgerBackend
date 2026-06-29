@@ -105,6 +105,10 @@ func (r *FakeMemberRepository) FindByID(_ context.Context, id uuid.UUID) (*model
 	return nil, apperr.ErrNotFound
 }
 
+func (r *FakeMemberRepository) Search(_ context.Context, _ repository.PlayerSearchFilter) ([]*model.Member, error) {
+	return nil, nil
+}
+
 // ===== Fake JWT Manager =====
 
 type FakeJWTManager struct {

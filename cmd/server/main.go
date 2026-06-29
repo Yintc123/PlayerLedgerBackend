@@ -173,6 +173,9 @@ func main() {
 	depositService := service.NewDepositService(depositRepo, memberRepo, auditLogger)
 	log.Info("deposit service initialized")
 
+	playerService := service.NewPlayerService(memberRepo, auditLogger)
+	log.Info("player service initialized")
+
 	// CMS user 管理服務（cms-users-api §9）。
 	// userRevocationTTL = max(ClientPolicies.AbsoluteTTL) + 24h 安全餘量（§4.3）。
 	var maxAbsTTL time.Duration
@@ -274,11 +277,16 @@ func main() {
 		Use(jwt.AuthMiddleware(jwtManager, blacklist, userRevoke)).
 		Use(jwt.RequireUserType(jwt.UserTypeCMS))
 	cmsUserHandler := handler.NewCMSUserHandler(cmsUserService)
+	playerHandler := handler.NewPlayerHandler(playerService)
 	{
 		cmsGroup.POST("/deposit-records", jwt.RequireRole(jwt.RoleAdmin, jwt.RoleUser), depositHandler.Create)
 		cmsGroup.GET("/deposit-records", depositHandler.List)
 		cmsGroup.GET("/deposit-records/:id", depositHandler.Get)
 		cmsGroup.PATCH("/deposit-records/:id", jwt.RequireRole(jwt.RoleAdmin), depositHandler.UpdateStatus)
+
+		// Players（players-api §3）。唯讀，全 CMS staff 可查；viewer 的 email/phone 由 handler 遮罩。
+		cmsGroup.GET("/players", playerHandler.Search)
+		cmsGroup.GET("/players/:id", playerHandler.Get)
 
 		// CMS Users（cms-users-api §3）。/me 必須先於 /:id 註冊（§14）。
 		//   GET     讀 → 全 CMS staff；PATCH/DELETE :id → admin only；PATCH /me → 自己
