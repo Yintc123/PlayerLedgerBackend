@@ -190,11 +190,14 @@ func (fs *FakeFamilyStore) Rotate(ctx context.Context, userID, fid, presentedJTI
 	return redis.ReplayDetected, nil, nil
 }
 
-func (fs *FakeFamilyStore) Revoke(ctx context.Context, userID, fid string) error {
+func (fs *FakeFamilyStore) Revoke(ctx context.Context, userID, fid string) (bool, error) {
 	if fs.families[userID] != nil {
-		delete(fs.families[userID], fid)
+		if _, ok := fs.families[userID][fid]; ok {
+			delete(fs.families[userID], fid)
+			return true, nil
+		}
 	}
-	return nil
+	return false, nil
 }
 
 func (fs *FakeFamilyStore) RevokeAll(ctx context.Context, userID string) error {

@@ -32,7 +32,7 @@ type RegisterRequest struct {
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+		HandleError(c, err) // validation 錯誤帶 details[]（§12.3 / OpenAPI ErrorResponse.details）
 		return
 	}
 
@@ -50,8 +50,8 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 // LoginRequest 登入請求（§3.5.3）。
 type LoginRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Username string `json:"username" binding:"required,max=128"`
+	Password string `json:"password" binding:"required,max=256"`
 	ClientID string `json:"client_id" binding:"required"`
 }
 
@@ -59,7 +59,7 @@ type LoginRequest struct {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+		HandleError(c, err)
 		return
 	}
 
@@ -87,7 +87,7 @@ type RefreshRequest struct {
 func (h *AuthHandler) Refresh(c *gin.Context) {
 	var req RefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+		HandleError(c, err)
 		return
 	}
 

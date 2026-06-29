@@ -32,7 +32,7 @@ func (s *spyFamilyStore) Save(context.Context, redis.FamilyState) error { return
 func (s *spyFamilyStore) Rotate(context.Context, string, string, string, string, time.Duration) (redis.RotateResult, *redis.FamilyState, error) {
 	return redis.FamilyNotFound, nil, nil
 }
-func (s *spyFamilyStore) Revoke(context.Context, string, string) error { return nil }
+func (s *spyFamilyStore) Revoke(context.Context, string, string) (bool, error) { return true, nil }
 func (s *spyFamilyStore) RevokeAll(_ context.Context, userID string) error {
 	s.revokeAllCalls = append(s.revokeAllCalls, userID)
 	return nil

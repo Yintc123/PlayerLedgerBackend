@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +187,10 @@ func (m *fakeJWTManager) SignRefresh(ctx context.Context, p jwt.SignRefreshParam
 }
 
 func (m *fakeJWTManager) VerifyRefresh(ctx context.Context, token string) (*jwt.RefreshClaims, error) {
+	// 模擬簽章 / 結構驗證失敗：非預期格式的 token 一律視為無效。
+	if !strings.HasPrefix(token, "fake_refresh_token") {
+		return nil, jwt.ErrInvalidToken
+	}
 	// 解析假 token 格式：fake_refresh_token_<jti>
 	claims := &jwt.RefreshClaims{}
 	claims.Subject = "fake_user_id"
@@ -202,6 +207,26 @@ func (m *fakeJWTManager) PolicyOf(ctx context.Context, clientID string) (config.
 		return config.ClientPolicy{}, apperr.ErrInvalidClient
 	}
 	return policy, nil
+}
+
+// spyAuditLogger 記錄寫入的 audit 事件，供測試斷言欄位內容。
+type spyAuditLogger struct {
+	events []audit.AuthEvent
+}
+
+func (s *spyAuditLogger) Log(_ context.Context, e audit.AuthEvent) {
+	s.events = append(s.events, e)
+}
+func (s *spyAuditLogger) Sync() error { return nil }
+
+// find 回傳第一個指定型別的事件。
+func (s *spyAuditLogger) find(t audit.EventType) (audit.AuthEvent, bool) {
+	for _, e := range s.events {
+		if e.Type == t {
+			return e, true
+		}
+	}
+	return audit.AuthEvent{}, false
 }
 
 type fakeFamilyStore struct {
@@ -238,14 +263,17 @@ func (s *fakeFamilyStore) Rotate(ctx context.Context, userID, fid, presentedJTI,
 		return redis.GraceHit, state, nil
 	}
 
+	// replay：回傳被廢 family 的最後狀態（對齊真實 familyStore，供 audit 記 current_jti / delta_sec）
+	replayState := *state
 	delete(s.families, key)
-	return redis.ReplayDetected, nil, nil
+	return redis.ReplayDetected, &replayState, nil
 }
 
-func (s *fakeFamilyStore) Revoke(ctx context.Context, userID, fid string) error {
+func (s *fakeFamilyStore) Revoke(ctx context.Context, userID, fid string) (bool, error) {
 	key := userID + ":" + fid
+	_, existed := s.families[key]
 	delete(s.families, key)
-	return nil
+	return existed, nil
 }
 
 func (s *fakeFamilyStore) RevokeAll(ctx context.Context, userID string) error {
@@ -550,7 +578,9 @@ func TestAuthService_ListSessions_WithCurrent(t *testing.T) {
 	assert.True(t, found)
 }
 
-// TestAuthService_RevokeSession_CannotRevokeCurrent 不能撤销当前 session（§8.9）
+// TestAuthService_RevokeSession_CannotRevokeCurrent 不能撤销当前 session（§8.9）。
+// 對齊 OpenAPI / ADR 007：回 ErrUseLogoutInstead（handler → 400 use_logout_instead），
+// 而非 forbidden。
 func TestAuthService_RevokeSession_CannotRevokeCurrent(t *testing.T) {
 	ctx := context.Background()
 	cmsUserRepo := newFakeCMSUserRepository()
@@ -567,8 +597,87 @@ func TestAuthService_RevokeSession_CannotRevokeCurrent(t *testing.T) {
 
 	// 尝试撤销当前 session
 	err := svc.RevokeSession(ctx, userID, currentFID, currentFID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "forbidden")
+	assert.ErrorIs(t, err, apperr.ErrUseLogoutInstead)
+}
+
+// TestAuthService_RevokeSession_NotFound 撤銷不存在的 fid → ErrNotFound（handler → 404，
+// 對齊 OpenAPI / ADR 007）。
+func TestAuthService_RevokeSession_NotFound(t *testing.T) {
+	ctx := context.Background()
+	cmsUserRepo := newFakeCMSUserRepository()
+	memberRepo := newFakeMemberRepository()
+	h := &fakeHasher{}
+	jwtMgr := newFakeJWTManager()
+	familyStore := newFakeFamilyStore()
+	blacklist := newFakeAccessTokenBlacklist()
+
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute, 10*time.Second)
+
+	userID := uuid.New().String()
+	currentFID := uuid.New().String()
+	missingFID := uuid.New().String()
+
+	err := svc.RevokeSession(ctx, userID, currentFID, missingFID)
+	assert.ErrorIs(t, err, apperr.ErrNotFound)
+}
+
+// TestAuthService_Logout_InvalidRefreshToken_ReturnsInvalidInput — logout 帶結構錯的
+// refresh_token 應回 ErrInvalidInput（handler → 400），對齊 OpenAPI logout 契約，
+// 不細分 token_expired / invalid_token（那是 refresh 流程的語意）。
+func TestAuthService_Logout_InvalidRefreshToken_ReturnsInvalidInput(t *testing.T) {
+	ctx := context.Background()
+	cmsUserRepo := newFakeCMSUserRepository()
+	memberRepo := newFakeMemberRepository()
+	h := &fakeHasher{}
+	jwtMgr := newFakeJWTManager()
+	familyStore := newFakeFamilyStore()
+	blacklist := newFakeAccessTokenBlacklist()
+
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, audit.NewNopLogger(), 15*time.Minute, 10*time.Second)
+
+	err := svc.Logout(ctx, LogoutInput{
+		UserID:       "fake_user_id",
+		FamilyID:     "fake_fid",
+		AccessJTI:    "jti",
+		RefreshToken: "garbage-not-a-token", // VerifyRefresh 失敗
+	})
+	assert.ErrorIs(t, err, apperr.ErrInvalidInput)
+}
+
+// TestAuthService_Refresh_ReplayDetected_AuditEnriched — replay 偵測的 audit 事件需含
+// presented_jti / current_jti / delta_sec（ADR 007 §18.3.2）。
+func TestAuthService_Refresh_ReplayDetected_AuditEnriched(t *testing.T) {
+	ctx := context.Background()
+	cmsUserRepo := newFakeCMSUserRepository()
+	memberRepo := newFakeMemberRepository()
+	h := &fakeHasher{}
+	jwtMgr := newFakeJWTManager()
+	familyStore := newFakeFamilyStore()
+	blacklist := newFakeAccessTokenBlacklist()
+	spyAudit := &spyAuditLogger{}
+
+	svc := NewAuthService(cmsUserRepo, memberRepo, jwtMgr, h, familyStore, blacklist, spyAudit, 15*time.Minute, 10*time.Second)
+
+	// family 的 CurrentJTI 與 presented jti（"fake_jti"）不同 → 觸發 replay
+	_ = familyStore.Save(ctx, redis.FamilyState{
+		UserID:        "fake_user_id",
+		FamilyID:      "fake_fid",
+		ClientID:      "cms-web",
+		UserType:      "cms",
+		Role:          "user",
+		CurrentJTI:    "rotated_jti", // != presented "fake_jti"
+		AbsoluteExp:   time.Now().Add(8 * time.Hour).Unix(),
+		LastRotatedAt: time.Now().Add(-30 * time.Second).Unix(),
+	})
+
+	_, err := svc.Refresh(ctx, RefreshInput{RefreshToken: "fake_refresh_token_fake_jti"})
+	assert.ErrorIs(t, err, apperr.ErrReplayDetected)
+
+	ev, ok := spyAudit.find(audit.EventReplayDetected)
+	require.True(t, ok, "應寫入 replay_detected audit 事件")
+	assert.Equal(t, "fake_jti", ev.Extra["presented_jti"])
+	assert.Equal(t, "rotated_jti", ev.Extra["current_jti"])
+	require.Contains(t, ev.Extra, "delta_sec")
 }
 
 // TestAuthService_Refresh_PassesGraceWindowToFamilyStore — regression test for H1。

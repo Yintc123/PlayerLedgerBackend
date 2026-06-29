@@ -63,6 +63,12 @@ func (h *DepositHandler) Create(c *gin.Context) {
 	if currency == "" {
 		currency = "TWD"
 	}
+	// currency 白名單（與 DB CHECK 一致，deposit-records-model §3）。非白名單格式合法但 DB 會拒，
+	// 於此先攔下回 400 invalid input，避免 check violation 噴成 500。
+	if !validCurrencies[currency] {
+		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+		return
+	}
 
 	claims, ok := jwt.GetClaims(c)
 	if !ok {
@@ -105,6 +111,10 @@ var validDepositStatuses = map[string]model.DepositStatus{
 	"cancelled": model.DepositStatusCancelled,
 	"refunded":  model.DepositStatusRefunded,
 }
+
+// validCurrencies 幣別白名單（對齊 deposit_records.currency 的 DB CHECK 約束）。
+// 擴充幣別時需同步更新 migration CHECK、OpenAPI enum 與此處。
+var validCurrencies = map[string]bool{"TWD": true}
 
 var validPaymentMethods = map[string]model.PaymentMethod{
 	"bank_transfer":     model.PaymentMethodBankTransfer,

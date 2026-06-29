@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -38,7 +39,22 @@ func TestFromCMSUser_SoftDeleted_CarriesDeletedAt(t *testing.T) {
 	d := FromCMSUser(u)
 
 	require.NotNil(t, d.DeletedAt)
-	assert.Equal(t, deletedAt, *d.DeletedAt)
+	assert.Equal(t, deletedAt.UTC().Format(time.RFC3339), *d.DeletedAt)
+}
+
+func TestFromCMSUser_TimestampsRFC3339UTC(t *testing.T) {
+	created := time.Date(2026, 6, 1, 12, 30, 0, 0, time.FixedZone("UTC+8", 8*3600))
+	u := &model.CMSUser{
+		Base:     model.Base{ID: uuid.New(), CreatedAt: created, UpdatedAt: created},
+		Username: "tz",
+		Role:     "user",
+	}
+	d := FromCMSUser(u)
+
+	// 不論輸入時區，輸出一律正規化為 UTC（Z 結尾）
+	assert.Equal(t, created.UTC().Format(time.RFC3339), d.CreatedAt)
+	assert.Equal(t, created.UTC().Format(time.RFC3339), d.UpdatedAt)
+	assert.True(t, strings.HasSuffix(d.CreatedAt, "Z"), "created_at 應為 UTC（Z 結尾），got %s", d.CreatedAt)
 }
 
 func TestFromCMSUser_NeverLeaksPasswordHash(t *testing.T) {

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: PlayerLedger Backend API
-  version: 1.13.0
+  version: 1.14.0
   description: |
     PlayerLedger Backend HTTP API。
     完整認證設計見 [ADR 007](../docs/adr/007-refresh-token-rotation-and-replay-detection.md)。
@@ -958,10 +958,9 @@ components:
           description: 正整數；單位為幣別最小單位（TWD：元）
         currency:
           type: string
-          minLength: 3
-          maxLength: 3
+          enum: [TWD]
           default: TWD
-          description: 預設 TWD；3 字元 ISO 4217
+          description: 預設 TWD；3 字元 ISO 4217。目前白名單僅 TWD（與 DB CHECK 一致），非白名單值 → 400 invalid input
         payment_method:
           $ref: '#/components/schemas/PaymentMethod'
         internal_note:

@@ -391,8 +391,9 @@ func TestRevoke_SingleFamily_DeletesKeyAndRemovesIndex(t *testing.T) {
 	require.NoError(t, err)
 
 	// Revoke 第一个 family
-	err = fs.Revoke(ctx, state1.UserID, state1.FamilyID)
+	found, err := fs.Revoke(ctx, state1.UserID, state1.FamilyID)
 	assert.NoError(t, err, "Revoke should not error")
+	assert.True(t, found, "revoking an existing family should report found=true")
 
 	// 驗證第一个 family 被刪除
 	key1 := fmt.Sprintf("auth:family:{%s}:%s", state1.UserID, state1.FamilyID)

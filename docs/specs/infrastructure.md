@@ -591,9 +591,9 @@ paths:
 | `POST /auth/register` | `invalid input`、`invalid_client`、`username_taken`、`weak_password`、`too many requests` |
 | `POST /auth/login` | `invalid input`、`invalid_client`、`unauthorized`、`too many requests` |
 | `POST /auth/refresh` | `invalid input`、`token_expired`、`absolute_expired`、`invalid_token`、`replay_detected`、`session_not_found`、`too many requests` |
-| `POST /auth/logout` | `invalid input`、`unauthorized`、`token_expired`、`invalid_token`、`session_revoked`、`too many requests` |
+| `POST /auth/logout` | `invalid input`、`unauthorized`、`session_revoked`、`too many requests`（帶結構錯的 refresh_token / fid 不符 → `invalid input`，不細分 token_expired / invalid_token）|
 | `GET /auth/sessions` | `unauthorized`、`token_expired`、`invalid_token`、`too many requests` |
-| `DELETE /auth/sessions/{fid}` | 上列 + `forbidden`、`resource not found` |
+| `DELETE /auth/sessions/{fid}` | 上列 + `use_logout_instead`（撤自己當前 family → 400）、`resource not found`（fid 不存在 → 404）|
 | `POST /auth/sessions/revoke-all` | `unauthorized`、`token_expired`、`invalid_token`、`too many requests` |
 
 > **schema 變更流程**：依 §3.1 — 先改 `schema/openapi.yaml`，再改 handler E2E test，最後改實作。
@@ -2849,6 +2849,7 @@ func validationMessage(fe validator.FieldError) string {
 | AuthMiddleware（blacklist hit） | `IsBlacklisted == true` | 401 | `session_revoked` | 強制踢人（管理員、改密碼、family revoke）；middleware 內直接寫，不過 HandleError |
 | AuthMiddleware（user-revoke hit）| `claims.iat < RevokedAfter` | 401 | `session_revoked` | Admin 對整 user 強制踢人（§7.5）；同 error code 不區分原因，避免洩漏內部判斷 |
 | `apperr.ErrForbidden` | `errors.Is` | 403 | `forbidden` | |
+| `apperr.ErrUseLogoutInstead` | `errors.Is` | 400 | `use_logout_instead` | 撤銷自己當前 family（`DELETE /auth/sessions/{fid}` 且 `fid == 當前 family`）；請改打 `/auth/logout`（§8.9）|
 | `apperr.ErrNotFound` | `errors.Is` | 404 | `resource not found` | |
 | `apperr.ErrConflict` | `errors.Is` | 409 | `resource already exists` | |
 | `apperr.ErrUsernameTaken` | `errors.Is` | 409 | `username_taken` | Register 時 cms_users 已存在同名（依 §12.5 unique 23505 包裝為此 sentinel；獨立於 generic conflict） |

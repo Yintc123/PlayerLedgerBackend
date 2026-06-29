@@ -265,6 +265,23 @@ func TestDepositHandler_Create_InvalidPaymentMethod_Returns400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// TestDepositHandler_Create_NonWhitelistedCurrency_Returns400 — 格式合法但非白名單幣別
+// （如 USD）應在 handler 攔下回 400，而非交給 DB CHECK 噴 500。
+func TestDepositHandler_Create_NonWhitelistedCurrency_Returns400(t *testing.T) {
+	svc := newFakeDepositService()
+	r, _ := setupDepositCMSRouter(t, svc)
+
+	body := map[string]any{
+		"player_id":      uuid.New().String(),
+		"amount":         100,
+		"currency":       "USD", // 3 字元、格式合法，但不在白名單
+		"payment_method": "manual",
+	}
+
+	w := doRequest(r, http.MethodPost, "/api/cms/deposit-records", body)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 // TestDepositHandler_Create_PlayerNotFound_Returns404
 func TestDepositHandler_Create_PlayerNotFound_Returns404(t *testing.T) {
 	svc := newFakeDepositService()

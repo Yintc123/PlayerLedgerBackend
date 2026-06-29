@@ -13,15 +13,18 @@ var (
 	ErrConflict        = errors.New("resource already exists")
 	ErrInvalidInput    = errors.New("invalid input")
 	ErrTokenExpired    = errors.New("token expired")
-	ErrAbsoluteExpired = errors.New("absolute expired")
+	ErrAbsoluteExpired = errors.New("absolute session expired")
 	ErrInvalidToken    = errors.New("invalid token")
-	ErrReplayDetected  = errors.New("replay detected")
+	ErrReplayDetected  = errors.New("token replay detected")
 	ErrFamilyNotFound  = errors.New("session not found") // family 不存在（已過期 / 已被廢）
 	ErrSessionRevoked  = errors.New("session revoked")
-	ErrUsernameTaken   = errors.New("username taken")
-	ErrWeakPassword    = errors.New("weak password")
-	ErrInvalidClient   = errors.New("invalid client")
-	ErrTooManyRequests = errors.New("too many requests")
+	// ErrUseLogoutInstead 嘗試撤銷自己當前 family；handler 映射至 400 use_logout_instead
+	// （對齊 OpenAPI / ADR 007 §297，請改打 /auth/logout）。
+	ErrUseLogoutInstead = errors.New("use logout instead")
+	ErrUsernameTaken    = errors.New("username taken")
+	ErrWeakPassword     = errors.New("weak password")
+	ErrInvalidClient    = errors.New("invalid client")
+	ErrTooManyRequests  = errors.New("too many requests")
 
 	// CMS users domain（cms-users-api.md §8）— admin 管理 cms_users 表時用的 invariant 違反 sentinels。
 	ErrLastAdminLockout        = errors.New("last admin lockout")

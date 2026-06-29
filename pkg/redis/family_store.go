@@ -64,16 +64,18 @@ type FamilyStore interface {
 	// 回传 invariant：
 	//   - Rotated         → (Rotated, *FamilyState non-nil, nil)
 	//   - GraceHit        → (GraceHit, *FamilyState non-nil, nil)
-	//   - ReplayDetected  → (ReplayDetected, nil, nil)
+	//   - ReplayDetected  → (ReplayDetected, *FamilyState（state_json 存在时非 nil，供 audit 记 current_jti / delta_sec）, nil)
 	//   - FamilyNotFound  → (FamilyNotFound, nil, nil)
 	//   - 其他 Redis error → (0, nil, err)
 	// 若 Rotated / GraceHit 回传 nil state（Lua bug / state_json 为空），caller **必须** fail-closed
-	// 视为 ErrFamilyNotFound，禁止对 nil 解参考造成 panic。
+	// 视为 ErrFamilyNotFound，禁止对 nil 解参考造成 panic。ReplayDetected 的 state 仅供 audit，
+	// 控制流不依赖它，故 nil 亦安全。
 	Rotate(ctx context.Context, userID, fid, presentedJTI, newJTI string,
 		graceWindow time.Duration) (RotateResult, *FamilyState, error)
 
-	// Revoke：登出单一 family
-	Revoke(ctx context.Context, userID, fid string) error
+	// Revoke：登出单一 family。回传 found 表示该 family 撤销前是否存在
+	//（false = fid 不存在，caller 据此回 404；对齐 OpenAPI / ADR 007）。
+	Revoke(ctx context.Context, userID, fid string) (found bool, err error)
 
 	// RevokeAll：登出该 user 所有 family（改密码 / 强制全装置登出）
 	RevokeAll(ctx context.Context, userID string) error
@@ -263,9 +265,22 @@ func (fs *familyStore) Rotate(ctx context.Context, userID, fid, presentedJTI, ne
 
 	rotateResult := RotateResult(code)
 
-	// 处理 ReplayDetected 和 FamilyNotFound，都回传 nil state
-	if rotateResult == ReplayDetected || rotateResult == FamilyNotFound {
+	// FamilyNotFound：无 state
+	if rotateResult == FamilyNotFound {
 		return rotateResult, nil, nil
+	}
+
+	// ReplayDetected：Lua 仍回传被废 family 的 state（供 audit 记 current_jti / delta_sec）；
+	// 控制流不依赖它，state_json 为空时回 nil 亦安全。
+	if rotateResult == ReplayDetected {
+		if stateJSON == "" {
+			return rotateResult, nil, nil
+		}
+		var state FamilyState
+		if err := json.Unmarshal([]byte(stateJSON), &state); err != nil {
+			return rotateResult, nil, nil
+		}
+		return rotateResult, &state, nil
 	}
 
 	// 处理 Rotated 和 GraceHit：必须有 state_json，否则 fail-closed 视为 ErrFamilyNotFound
@@ -283,9 +298,9 @@ func (fs *familyStore) Rotate(ctx context.Context, userID, fid, presentedJTI, ne
 }
 
 // Revoke 實作 FamilyStore.Revoke。
-func (fs *familyStore) Revoke(ctx context.Context, userID, fid string) error {
+func (fs *familyStore) Revoke(ctx context.Context, userID, fid string) (bool, error) {
 	if !fs.scriptsReady {
-		return fmt.Errorf("family store not ready")
+		return false, fmt.Errorf("family store not ready")
 	}
 
 	// KEYS[1] = auth:family:{userID}:fid
@@ -297,8 +312,13 @@ func (fs *familyStore) Revoke(ctx context.Context, userID, fid string) error {
 	}
 	argv := []interface{}{fid}
 
-	_, err := fs.revokeScript.Run(ctx, fs.client, keys, argv...).Result()
-	return err
+	res, err := fs.revokeScript.Run(ctx, fs.client, keys, argv...).Result()
+	if err != nil {
+		return false, err
+	}
+	// revoke.lua 回传 DEL 命中数（1 = 存在并删除；0 = 不存在）
+	deleted, _ := res.(int64)
+	return deleted > 0, nil
 }
 
 // RevokeAll 實作 FamilyStore.RevokeAll。

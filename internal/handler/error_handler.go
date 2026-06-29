@@ -72,6 +72,8 @@ func HandleError(c *gin.Context, err error) {
 		httpx.WriteError(c, http.StatusUnauthorized, "unauthorized")
 	case errors.Is(err, apperr.ErrForbidden):
 		httpx.WriteError(c, http.StatusForbidden, "forbidden")
+	case errors.Is(err, apperr.ErrUseLogoutInstead):
+		httpx.WriteError(c, http.StatusBadRequest, "use_logout_instead")
 	case errors.Is(err, apperr.ErrTokenExpired):
 		httpx.WriteError(c, http.StatusUnauthorized, "token_expired")
 	case errors.Is(err, apperr.ErrAbsoluteExpired):
@@ -116,7 +118,7 @@ func HandleError(c *gin.Context, err error) {
 // mapAppErrorToHTTP 將 AppError.Code 映射到 HTTP status + error code。
 func mapAppErrorToHTTP(code string) (int, string) {
 	switch code {
-	case "forbidden", "use_logout_instead":
+	case "forbidden":
 		return http.StatusForbidden, "forbidden"
 	default:
 		return http.StatusInternalServerError, "internal server error"

@@ -381,12 +381,20 @@ func (s *authService) Refresh(ctx context.Context, in RefreshInput) (*TokenPair,
 	}
 
 	if result == redis.ReplayDetected {
+		// ADR 007 §18.3.2：記 presented_jti / current_jti / delta_sec。
+		// current_jti / delta_sec 取自被廢 family 的最後狀態（Rotate 於 replay 仍回傳 state）；
+		// 若 state 不可用（罕見：state_json 為空）則僅記 presented_jti。
+		extra := map[string]any{"presented_jti": presentedJTI}
+		if state != nil {
+			extra["current_jti"] = state.CurrentJTI
+			extra["delta_sec"] = time.Now().Unix() - state.LastRotatedAt
+		}
 		s.audit.Log(ctx, audit.AuthEvent{
 			Type:     audit.EventReplayDetected,
 			UserID:   userID,
 			FamilyID: fid,
 			ClientID: clientID,
-			Extra:    map[string]any{"presented_jti": presentedJTI},
+			Extra:    extra,
 		})
 		metrics.AuthReplayDetected.WithLabelValues(clientID).Inc()
 		return nil, apperr.ErrReplayDetected
@@ -454,18 +462,20 @@ func (s *authService) Refresh(ctx context.Context, in RefreshInput) (*TokenPair,
 // Logout 廢當前 family + access JTI 入黑名單（§8.9）。
 // 若提供 refresh_token，驗 fid 與 access claims 一致（§8.2）。
 func (s *authService) Logout(ctx context.Context, in LogoutInput) error {
-	// 若提供 refresh_token，驗 fid 一致（§3.5.3 logout 說明）
+	// 若提供 refresh_token，驗其有效且 fid 與 access token 一致（§3.5.3 logout 說明）。
+	// 任一不符一律回 400 invalid input（對齊 OpenAPI logout 契約：簽章/結構錯與 fid 不符皆 400），
+	// 不細分 token_expired / invalid_token——logout 帶錯誤 refresh_token 屬請求格式問題，非認證流程。
 	if in.RefreshToken != "" {
 		claims, err := s.jwtManager.VerifyRefresh(ctx, in.RefreshToken)
 		if err != nil {
-			return transitJWTError(err)
+			return apperr.ErrInvalidInput
 		}
 		if claims.FamilyID != in.FamilyID {
 			return apperr.ErrInvalidInput
 		}
 	}
 
-	if err := s.familyStore.Revoke(ctx, in.UserID, in.FamilyID); err != nil {
+	if _, err := s.familyStore.Revoke(ctx, in.UserID, in.FamilyID); err != nil {
 		logger.L().Error("revoke family failed", zap.Error(err))
 		return fmt.Errorf("revoke family: %w", err)
 	}
@@ -513,15 +523,20 @@ func (s *authService) ListSessions(ctx context.Context, userID, currentFID strin
 }
 
 // RevokeSession 撤銷指定 fid（§8.9）。
-// targetFID == currentFID → 回 ErrForbidden（請改打 /auth/logout）。
+// targetFID == currentFID → 回 ErrUseLogoutInstead（400 use_logout_instead，請改打 /auth/logout）；
+// fid 不存在 → 回 ErrNotFound（404，對齊 OpenAPI / ADR 007）。
 func (s *authService) RevokeSession(ctx context.Context, userID, currentFID, targetFID string) error {
 	if targetFID == currentFID {
-		return apperr.ErrForbidden
+		return apperr.ErrUseLogoutInstead
 	}
 
-	if err := s.familyStore.Revoke(ctx, userID, targetFID); err != nil {
+	found, err := s.familyStore.Revoke(ctx, userID, targetFID)
+	if err != nil {
 		logger.L().Error("revoke session failed", zap.Error(err))
 		return fmt.Errorf("revoke session: %w", err)
+	}
+	if !found {
+		return apperr.ErrNotFound
 	}
 
 	s.audit.Log(ctx, audit.AuthEvent{

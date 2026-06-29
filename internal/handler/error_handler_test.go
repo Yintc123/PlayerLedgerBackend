@@ -56,3 +56,11 @@ func TestHandleError_CMSUserSentinels(t *testing.T) {
 		{"ErrCurrentPasswordMismatch", apperr.ErrCurrentPasswordMismatch, http.StatusUnauthorized, "current_password_mismatch"},
 	})
 }
+
+// TestHandleError_UseLogoutInstead 驗證撤銷自己當前 family 的 sentinel 映射為
+// 400 use_logout_instead（對齊 OpenAPI / ADR 007，取代舊的 403 forbidden）。
+func TestHandleError_UseLogoutInstead(t *testing.T) {
+	runHandleErrorCases(t, []errorMapCase{
+		{"ErrUseLogoutInstead", apperr.ErrUseLogoutInstead, http.StatusBadRequest, "use_logout_instead"},
+	})
+}
