@@ -28,7 +28,7 @@ env:
   IMAGE_NAME: igs_backend
   AWS_REGION: ap-southeast-2
   ECS_CLUSTER: warmhearted-crocodile-18gqvo-jko-cluster
-  ECS_SERVICE: playerledger-backend
+  ECS_SERVICE: igs-backend-service-oykicrri
   CONTAINER_NAME: backend
 
 jobs:
