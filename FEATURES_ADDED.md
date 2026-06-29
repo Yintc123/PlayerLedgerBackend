@@ -92,7 +92,7 @@
 
 **集成点**：
 - main.go 启动时 NewRedisStore(redisClient, "ratelimit")
-- Router /api/v1 group apply IP middleware
+- Router /api group apply IP middleware
 - Auth protected routes apply User middleware
 
 **配置**（config.go）：
@@ -191,7 +191,7 @@
 router.GET(/health)
 router.GET(/health/ready)
 router.GET(/metrics)          # 无 auth、无限流
-router.Group(/api/v1)
+router.Group(/api)
   → IPMiddleware(100/min)     # 所有人受限
   → /auth
     → POST /register

@@ -1,7 +1,11 @@
 # PlayerLedger Backend — 基礎架構規格書
 
-版本：v1.12
-日期：2026-06-28
+版本：v1.13
+日期：2026-06-29
+
+> v1.13：移除 API 版本前綴——`apiGroup` 由 `/api/v1` 改為 `/api`（§9.2 router；§15 IPMiddleware 掛載點說明同步）。
+> auth 與 member 端點皆改為無版本號（`/api/auth/*`、`/api/me/*`），與 CMS 端點一致；對齊
+> `schema/openapi.yaml`（global servers 改 `/api`、移除各 CMS path 的 path-level servers 覆寫）。
 
 > v1.12：§18.2 新增 metric `audit_write_errors_total`（audit primary-sink 寫入失敗時 fallbackSyncer
 > 自動 +1，對應「§18.3.1 永不吞錯」原則 + cms-users-api.md §7 audit fail policy）。
@@ -2265,7 +2269,7 @@ if cfg.App.Env != "prod" {
     r.StaticFile("/docs", "./docs/api.html")
 }
 
-api := r.Group("/api/v1")
+api := r.Group("/api")
 //
 // Rate limit 分兩層：
 //   外層 IP 限流：所有人都受限，擋匿名濫用（含登入暴力破解）
@@ -3150,7 +3154,7 @@ _ = logger.L().Sync() // flush buffered log entries
 
 - 使用 `ulule/limiter` + Redis store，支援分散式多節點限流。
 - **兩層限流**（見 §9.2 router）：
-  - 外層 `IPMiddleware` 掛在 `/api/v1`：以 `c.ClientIP()` 為 key，匿名與已認證請求都受限，擋暴力濫用
+  - 外層 `IPMiddleware` 掛在 `/api`：以 `c.ClientIP()` 為 key，匿名與已認證請求都受限，擋暴力濫用
   - 內層 `UserMiddleware` 掛在 `AuthMiddleware` 之後：以 `claims.UserID()` 為 key，避免共享 IP（NAT、辦公室）誤傷合法使用者；額度可較寬鬆
 - 超出限制回傳 `429 Too Many Requests`，`Retry-After` header 告知重試時間。
 - 限流開關與參數由 `RateLimitConfig.IP` / `RateLimitConfig.User` 分別控制。
@@ -3162,7 +3166,7 @@ _ = logger.L().Sync() // flush buffered log entries
 ```go
 // pkg/ratelimit/middleware.go
 
-// IPMiddleware 以 c.ClientIP() 為限流 key，掛在 /api/v1，所有人都受限
+// IPMiddleware 以 c.ClientIP() 為限流 key，掛在 /api，所有人都受限
 func IPMiddleware(period time.Duration, limit int64, store limiter.Store) gin.HandlerFunc {
     return newMiddleware(period, limit, store, func(c *gin.Context) string {
         return "ratelimit:ip:" + c.ClientIP()

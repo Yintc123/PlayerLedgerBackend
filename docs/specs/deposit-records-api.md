@@ -1,8 +1,12 @@
 # 儲值紀錄（Deposit Records）— API 規格書
 
-版本：v1.5
+版本：v1.6
 日期：2026-06-29
 
+> v1.6：移除 API 版本前綴——玩家自助端點 `/api/v1/me/deposit-records` 改為 `/api/me/deposit-records`
+> （§1 路由前綴、§2 權限矩陣、§3 endpoint 清單、§4.5 同步更新）。所有端點統一無版本號，
+> 對齊 `infrastructure.md` 與 `schema/openapi.yaml`（global servers 改為 `/api`）。
+>
 > v1.5：補齊四項實作模糊點——
 > §4.4 補充並發策略（last-write-wins，見 model §1）；
 > §4.5 明確說明 member token `claims.sub` = `members.id`；
@@ -41,9 +45,9 @@
 - **備註覆蓋語意**：PATCH 更新備註為**覆蓋**（replace）；歷史備註由 audit log 保存，不在 DB 追加。
 - **server 自動填入欄位**：`player_name`（從 members 查）、`operator_id`（從 token）、`operator_ip`
   （從 HTTP request via `c.ClientIP()`）均由 server 填入，caller 無法指定，防止偽造。
-- **路由前綴分流**：
-  - CMS 管理端：`/api/cms/`（無版本號，CMS 為內部工具）
-  - 玩家自助查詢：`/api/v1/`（有版本號，對外 public API）
+- **路由前綴**：所有端點統一無版本號（v1.6 起移除 `/api/v1`）。
+  - CMS 管理端：`/api/cms/`
+  - 玩家自助查詢：`/api/me/deposit-records`
 
 ---
 
@@ -55,7 +59,7 @@
 | `GET /api/cms/deposit-records` 列表 | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `GET /api/cms/deposit-records/:id` 單筆 | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `PATCH /api/cms/deposit-records/:id` 改狀態／備註 | ✅ | ❌ | ❌ | ❌ | ❌ |
-| `GET /api/v1/me/deposit-records` 查自己 | ❌ | ❌ | ❌ | ✅ | ❌ |
+| `GET /api/me/deposit-records` 查自己 | ❌ | ❌ | ❌ | ✅ | ❌ |
 
 - CMS 端點：`Authorization: Bearer <access_token>`，`claims.utype == "cms"`；非 CMS 回 `403 forbidden`。
 - 玩家端點：`Authorization: Bearer <access_token>`，`claims.utype == "member"`；非 member 回 `403 forbidden`。
@@ -70,7 +74,7 @@
 | GET | `/api/cms/deposit-records` | access token | CMS staff | `DepositService.List` | 列出紀錄（分頁、篩選）|
 | GET | `/api/cms/deposit-records/:id` | access token | CMS staff | `DepositService.Get` | 取單筆 |
 | PATCH | `/api/cms/deposit-records/:id` | access token | admin only | `DepositService.Update` | 更新 status / 備註 |
-| GET | `/api/v1/me/deposit-records` | access token | member | `DepositService.ListByPlayer` | 玩家查自己的紀錄 |
+| GET | `/api/me/deposit-records` | access token | member | `DepositService.ListByPlayer` | 玩家查自己的紀錄 |
 
 ---
 
@@ -220,7 +224,7 @@ Go 標準 JSON decode 到 `*string` 無法區分 null 與缺席，handler 需使
 
 ---
 
-### 4.5 `GET /api/v1/me/deposit-records` — 玩家查自己的紀錄
+### 4.5 `GET /api/me/deposit-records` — 玩家查自己的紀錄
 
 **Query 參數**（皆 optional）：
 
@@ -321,7 +325,7 @@ tags:
     summary: 更新儲值狀態 / 備註
     operationId: updateDepositRecord
 
-# 玩家端（走 /api/v1 global servers）
+# 玩家端（走 /api global servers）
 /me/deposit-records:
   get:
     tags: [deposit-records]
@@ -353,7 +357,7 @@ depositH := handler.NewDepositHandler(depositService)
     cmsGroup.PATCH("/deposit-records/:id", jwt.RequireRole(jwt.RoleAdmin), depositH.UpdateStatus)
 }
 
-// 玩家端（/api/v1，走既有 apiGroup + RequireUserType member）
+// 玩家端（/api，走既有 apiGroup + RequireUserType member）
 memberGroup := apiGroup.Group("").Use(
     jwt.AuthMiddleware(jwtMgr, blacklist, userRevoke),
     jwt.RequireUserType(jwt.UserTypeMember),

@@ -230,8 +230,8 @@ func main() {
 	// Metrics（由 k8s NetworkPolicy 網路層隔離，§18.1）
 	router.GET(cfg.Metrics.Path, metrics.Handler())
 
-	// /api/v1 - IP 層限流（§15.2）
-	apiGroup := router.Group("/api/v1")
+	// /api - IP 層限流（§15.2）。CMS 為內部工具不需版本隔離，auth / member 端點亦不做版本控制，統一無版本前綴。
+	apiGroup := router.Group("/api")
 	if limiterStore != nil && cfg.RateLimit.Enabled {
 		apiGroup.Use(ratelimit.IPMiddleware(cfg.RateLimit.IPPeriod, cfg.RateLimit.IPLimit, limiterStore))
 	}
@@ -257,7 +257,7 @@ func main() {
 		}
 	}
 
-	// Member deposit endpoints（/api/v1/me/deposit-records）
+	// Member deposit endpoints（/api/me/deposit-records）
 	depositHandler := handler.NewDepositHandler(depositService)
 	memberDepositGroup := apiGroup.Group("/me").
 		Use(jwt.AuthMiddleware(jwtManager, blacklist, userRevoke)).

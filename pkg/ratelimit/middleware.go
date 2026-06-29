@@ -13,7 +13,7 @@ import (
 )
 
 // IPMiddleware 以 c.ClientIP() 为限流 key（§15.2）
-// 掛在 /api/v1，所有人都受限（匿名 + 已認證）
+// 掛在 /api，所有人都受限（匿名 + 已認證）
 func IPMiddleware(period time.Duration, limit int64, store limiter.Store) gin.HandlerFunc {
 	return newMiddleware(period, limit, store, func(c *gin.Context) string {
 		return "ratelimit:ip:" + c.ClientIP()

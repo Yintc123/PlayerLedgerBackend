@@ -178,7 +178,7 @@ func setupDepositMemberRouter(t *testing.T, svc service.DepositService, playerID
 	r.Use(injectClaims(claims))
 
 	h := NewDepositHandler(svc)
-	r.GET("/api/v1/me/deposit-records", h.ListMine)
+	r.GET("/api/me/deposit-records", h.ListMine)
 
 	return r
 }
@@ -438,7 +438,7 @@ func TestDepositHandler_UpdateStatus_InvalidTransition_Returns422(t *testing.T) 
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 }
 
-// ─── GET /api/v1/me/deposit-records ──────────────────────────────────────────
+// ─── GET /api/me/deposit-records ──────────────────────────────────────────
 
 // TestDepositHandler_ListMine_Success_ReturnsOnlyOwnRecords
 func TestDepositHandler_ListMine_Success_ReturnsOnlyOwnRecords(t *testing.T) {
@@ -449,7 +449,7 @@ func TestDepositHandler_ListMine_Success_ReturnsOnlyOwnRecords(t *testing.T) {
 	seedFakeDeposit(svc, model.DepositStatusPending, uuid.New()) // 他人記錄
 
 	r := setupDepositMemberRouter(t, svc, playerID.String())
-	w := doRequest(r, http.MethodGet, "/api/v1/me/deposit-records", nil)
+	w := doRequest(r, http.MethodGet, "/api/me/deposit-records", nil)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp map[string]any
@@ -467,7 +467,7 @@ func TestDepositHandler_ListMine_HidesInternalNote(t *testing.T) {
 	rec.InternalNote = &note
 
 	r := setupDepositMemberRouter(t, svc, playerID.String())
-	w := doRequest(r, http.MethodGet, "/api/v1/me/deposit-records", nil)
+	w := doRequest(r, http.MethodGet, "/api/me/deposit-records", nil)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp map[string]any
@@ -484,7 +484,7 @@ func TestDepositHandler_ListMine_HidesInternalNote(t *testing.T) {
 func TestDepositHandler_ListMine_PageSizeOver50_Returns400(t *testing.T) {
 	svc := newFakeDepositService()
 	r := setupDepositMemberRouter(t, svc, uuid.New().String())
-	w := doRequest(r, http.MethodGet, "/api/v1/me/deposit-records?page_size=51", nil)
+	w := doRequest(r, http.MethodGet, "/api/me/deposit-records?page_size=51", nil)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
@@ -567,7 +567,7 @@ func TestDepositHandler_ListMine_EndDateBeforeStartDate_Returns400(t *testing.T)
 	r := setupDepositMemberRouter(t, svc, uuid.New().String())
 
 	w := doRequest(r, http.MethodGet,
-		"/api/v1/me/deposit-records?start_date=2026-06-30&end_date=2026-06-01", nil)
+		"/api/me/deposit-records?start_date=2026-06-30&end_date=2026-06-01", nil)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 

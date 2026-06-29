@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: PlayerLedger Backend API
-  version: 1.11.0
+  version: 1.12.0
   description: |
     PlayerLedger Backend HTTP API。
     完整認證設計見 [ADR 007](../docs/adr/007-refresh-token-rotation-and-replay-detection.md)。
@@ -9,16 +9,13 @@ info:
     **認證模型**：純 JWT，不走 cookie。Access token 走 `Authorization: Bearer`，refresh token 走 request body。
     Refresh token 採 family-based rotation + replay detection + 10 秒 grace window。
 
+    **路徑前綴**：所有端點統一無版本號，base URL 為 `/api`（v1.12 起移除 `/api/v1`；內部 + 對外端點皆不做版本隔離）。
+
 servers:
-  - url: http://localhost:8080/api/v1
-    description: 本地開發（Auth endpoints）
-  - url: https://api.example.com/api/v1
-    description: 正式環境（Auth endpoints）
-  # CMS endpoints 無版本號，使用下列 base URL；path-level servers 覆寫在各 /cms/* 路徑定義。
   - url: http://localhost:8080/api
-    description: 本地開發（CMS endpoints，無版本號）
+    description: 本地開發
   - url: https://api.example.com/api
-    description: 正式環境（CMS endpoints，無版本號）
+    description: 正式環境
 
 tags:
   - name: auth
@@ -304,13 +301,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # =============================================================
-  # Deposit Records — CMS 端（無版本號，path-level servers 覆寫）
+  # Deposit Records — CMS 端
   # 權限：utype == cms。POST 限 admin+user；PATCH 限 admin；GET 全 CMS staff。
   # =============================================================
   /cms/deposit-records:
-    servers:
-      - url: http://localhost:8080/api
-      - url: https://api.example.com/api
     post:
       tags: [deposit-records]
       summary: 建立儲值紀錄（admin / user）
@@ -410,9 +404,6 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
 
   /cms/deposit-records/{id}:
-    servers:
-      - url: http://localhost:8080/api
-      - url: https://api.example.com/api
     parameters:
       - name: id
         in: path
@@ -487,13 +478,10 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
 
   # =============================================================
-  # CMS Users — 內部人員管理（cms-users-api.md，無版本號，path-level servers 覆寫）
+  # CMS Users — 內部人員管理（cms-users-api.md）
   # 權限：utype == cms。GET 全 CMS staff；PATCH/DELETE :id 限 admin；PATCH /me 自己。
   # =============================================================
   /cms/users:
-    servers:
-      - url: http://localhost:8080/api
-      - url: https://api.example.com/api
     get:
       tags: [cms-users]
       summary: 列出 CMS users（全 CMS staff，分頁 + 篩選）
@@ -525,9 +513,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
 
   /cms/users/{id}:
-    servers:
-      - url: http://localhost:8080/api
-      - url: https://api.example.com/api
     parameters:
       - name: id
         in: path
@@ -617,9 +602,6 @@ paths:
           $ref: '#/components/responses/UnprocessableEntity'
 
   /cms/users/me:
-    servers:
-      - url: http://localhost:8080/api
-      - url: https://api.example.com/api
     patch:
       tags: [cms-users]
       summary: 自助更新 username / password（不可改 role）
@@ -662,7 +644,7 @@ paths:
           $ref: '#/components/responses/UnprocessableEntity'
 
   # =============================================================
-  # Deposit Records — 玩家端（走 /api/v1 global servers）
+  # Deposit Records — 玩家端（走 /api global servers）
   # 權限：utype == member；player_id 由 token claims.sub 決定，不可指定。
   # =============================================================
   /me/deposit-records:

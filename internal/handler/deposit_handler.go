@@ -278,7 +278,7 @@ func (h *DepositHandler) UpdateStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, OK(c, dto.FromDepositRecord(updated)))
 }
 
-// ─── GET /api/v1/me/deposit-records ──────────────────────────────────────────
+// ─── GET /api/me/deposit-records ─────────────────────────────────────────────
 
 func (h *DepositHandler) ListMine(c *gin.Context) {
 	claims, ok := jwt.GetClaims(c)
