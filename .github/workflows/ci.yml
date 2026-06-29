@@ -271,46 +271,65 @@ jobs:
       # 以 wait-for-service-stability 判定 task 是否健康上線。
 
   # ════════════════════════ Seed (staging) ════════════════════════
-  # 部署完成後，把 staging 資料表全部 drop 掉再重新倒入假資料（SEED_RESET=true）。
+  # 部署完成後，於 VPC 內以「一次性 ECS run-task」把 staging 資料表 drop 後重新倒入假資料。
   # 具破壞性：每次 main 部署都會清空 staging DB 後重灌 20 members + 50 隨機 deposit_records。
-  # 安全：APP_ENV 固定 staging（cmd/seed 對 prod 一律中止）。
   #
-  # ⚠️ 網路前提：GitHub-hosted runner 須能連到目標 PG。後端 PG 為內網 only，
-  #    因此 SEED_DB_HOST 必須指向「可從 runner 連到」的端點（公開可達的 staging DB、
-  #    或改用 VPC 內的 self-hosted runner / bastion tunnel）。否則此 job 會在連線階段失敗。
+  # 設計（in-VPC，解決內網 PG 不可達）：
+  #   - 複用 backend task definition「igs-backend」最新 revision（含本次新 image 的 /app/seed）。
+  #     → 自動繼承 task def 的 DB_HOST/DB_USER/DB_NAME + Secrets Manager 的 DB_PASSWORD/ADMIN_*，
+  #       不需任何 SEED_DB_* GitHub secrets。
+  #   - override container command=/app/seed、加 SEED_RESET=true（APP_ENV=staging 已在 task def，
+  #     cmd/seed 對 prod 一律中止）。
+  #   - 網路設定（subnet/SG/assignPublicIp）直接讀 .aws/service-backend.json，與 service 一致 →
+  #     task 在 VPC 內連得到私有 PG。
+  #
+  # 前置（IAM）：AWS_DEPLOY_ROLE_ARN 需具備 ecs:RunTask、ecs:DescribeTasks，
+  #   以及對 task role / execution role（jko_ecs）的 iam:PassRole 權限。
   seed-db:
-    name: Reset & Seed Database (Staging)
+    name: Reset & Seed Database (Staging, in-VPC ECS task)
     needs: deploy-staging
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
-    env:
-      # ── seed 真正會用到的：DB 連線 + admin（reset 會清掉 admin，由 seed 冪等重建）──
-      DB_HOST: ${{ secrets.SEED_DB_HOST }}
-      DB_PORT: ${{ secrets.SEED_DB_PORT }}
-      DB_USER: ${{ secrets.SEED_DB_USER }}
-      DB_PASSWORD: ${{ secrets.SEED_DB_PASSWORD }}
-      DB_NAME: ${{ secrets.SEED_DB_NAME }}
-      DB_SSLMODE: ${{ vars.SEED_DB_SSLMODE || 'require' }}
-      ADMIN_USERNAME: ${{ secrets.SEED_ADMIN_USERNAME }}
-      ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
-      # ── 觸發 drop + 重新倒入；APP_ENV 鎖 staging ──
-      APP_ENV: staging
-      SEED_RESET: 'true'
-      # ── 以下 config.Load() 驗證需要、但 seed 流程不實際使用，給 CI 占位值即可 ──
-      PORT: '8080'
-      ALLOWED_ORIGINS: 'https://staging.invalid'
-      REDIS_HOST: 'localhost' # seed 不連 Redis，僅為通過 config 驗證
-      JWT_SECRET: 'ci-seed-dummy-jwt-secret-not-used-000000'
-      JWT_REFRESH_SECRET: 'ci-seed-dummy-refresh-secret-not-used-111111'
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v5
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-      # cmd/seed：SEED_RESET=true → DropAll（drop 全部表）→ RunMigrations（重建 schema）
-      #            → EnsureAdmin → 20 members + 50 隨機但有效的 deposit_records。
-      - name: Reset DB and import seed data
-        run: go run ./cmd/seed
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run seed as one-off ECS task (drop + reseed)
+        run: |
+          set -euo pipefail
+          # 網路設定與 service 一致（同 subnet / SG / assignPublicIp），確保連得到私有 PG
+          NETCFG=$(jq -c '.networkConfiguration' .aws/service-backend.json)
+          OVERRIDES=$(jq -nc --arg c "${CONTAINER_NAME}" \
+            '{containerOverrides:[{name:$c,command:["/app/seed"],environment:[{name:"SEED_RESET",value:"true"}]}]}')
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${ECS_CLUSTER}" \
+            --task-definition igs-backend \
+            --launch-type FARGATE \
+            --network-configuration "${NETCFG}" \
+            --overrides "${OVERRIDES}" \
+            --query 'tasks[0].taskArn' --output text)
+
+          if [ -z "${TASK_ARN}" ] || [ "${TASK_ARN}" = "None" ]; then
+            echo "::error::run-task 未能啟動 task"; exit 1
+          fi
+          echo "seed task: ${TASK_ARN}"
+
+          aws ecs wait tasks-stopped --cluster "${ECS_CLUSTER}" --tasks "${TASK_ARN}"
+
+          EXIT=$(aws ecs describe-tasks --cluster "${ECS_CLUSTER}" --tasks "${TASK_ARN}" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          REASON=$(aws ecs describe-tasks --cluster "${ECS_CLUSTER}" --tasks "${TASK_ARN}" \
+            --query 'tasks[0].stoppedReason' --output text)
+          echo "exit code: ${EXIT} / stoppedReason: ${REASON}"
+          [ "${EXIT}" = "0" ] || { echo "::error::seed task 失敗（見 CloudWatch /ecs/igs-backend）"; exit 1; }

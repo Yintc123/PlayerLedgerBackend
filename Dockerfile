@@ -21,7 +21,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -trimpath \
       -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT}" \
       -tags=netgo,osusergo \
-      -o /out/server ./cmd/server
+      -o /out/server ./cmd/server && \
+    go build \
+      -trimpath \
+      -ldflags="-s -w" \
+      -tags=netgo,osusergo \
+      -o /out/seed ./cmd/seed
 
 # ===== runtime =====
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -30,6 +35,8 @@ USER nonroot:nonroot
 WORKDIR /app
 
 COPY --from=builder --chown=nonroot:nonroot /out/server /app/server
+# /app/seed：一次性 seed 工具（CI 以 ECS run-task override command 執行，見 ci.yml seed-db job）
+COPY --from=builder --chown=nonroot:nonroot /out/seed /app/seed
 COPY --from=builder --chown=nonroot:nonroot /src/migrations /app/migrations
 
 EXPOSE 8080
