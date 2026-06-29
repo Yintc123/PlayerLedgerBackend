@@ -40,4 +40,7 @@ COPY --from=builder --chown=nonroot:nonroot /out/seed /app/seed
 COPY --from=builder --chown=nonroot:nonroot /src/migrations /app/migrations
 
 EXPOSE 8080
-ENTRYPOINT ["/app/server"]
+# 用 CMD（非 ENTRYPOINT）放預設執行檔：service 跑 /app/server；
+# 一次性 seed 由 ECS run-task 以 containerOverrides.command=["/app/seed"] 取代 CMD。
+# （ECS override 只能改 command=Docker CMD，不能改 ENTRYPOINT，故二進位不可寫死在 ENTRYPOINT。）
+CMD ["/app/server"]

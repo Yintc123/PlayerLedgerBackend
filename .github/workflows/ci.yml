@@ -325,7 +325,12 @@ jobs:
           fi
           echo "seed task: ${TASK_ARN}"
 
-          aws ecs wait tasks-stopped --cluster "${ECS_CLUSTER}" --tasks "${TASK_ARN}"
+          if ! aws ecs wait tasks-stopped --cluster "${ECS_CLUSTER}" --tasks "${TASK_ARN}"; then
+            echo "::error::等待 task 停止超時；當前狀態："
+            aws ecs describe-tasks --cluster "${ECS_CLUSTER}" --tasks "${TASK_ARN}" \
+              --query 'tasks[0].{lastStatus:lastStatus,stoppedReason:stoppedReason,containers:containers[].{lastStatus:lastStatus,exitCode:exitCode,reason:reason}}'
+            exit 1
+          fi
 
           EXIT=$(aws ecs describe-tasks --cluster "${ECS_CLUSTER}" --tasks "${TASK_ARN}" \
             --query 'tasks[0].containers[0].exitCode' --output text)
