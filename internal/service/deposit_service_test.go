@@ -187,12 +187,17 @@ func TestDepositService_Create_ReferenceNoConflict_ReturnsErrReferenceNoConflict
 	assert.ErrorIs(t, err, apperr.ErrReferenceNoConflict)
 }
 
-// TestDepositService_Create_Success_SetsPlayerNameSnapshot 建立成功時 PlayerName 為快照
+// TestDepositService_Create_Success_SetsPlayerNameSnapshot 建立成功時 PlayerName 為 display_name 快照
+// （player_name 快照取 members.display_name 顯示暱稱，而非 username 登入帳號）
 func TestDepositService_Create_Success_SetsPlayerNameSnapshot(t *testing.T) {
 	depositRepo := newFakeDepositRepo()
 	memberRepo := newFakeMemberRepoDeposit()
 	playerID := uuid.New()
-	memberRepo.members[playerID] = &model.Member{Base: model.Base{ID: playerID}, Username: "alice"}
+	memberRepo.members[playerID] = &model.Member{
+		Base:        model.Base{ID: playerID},
+		Username:    "alice",
+		DisplayName: "Alice 暱稱",
+	}
 
 	svc := newDepositSvc(depositRepo, memberRepo, audit.NewNopLogger())
 
@@ -205,7 +210,7 @@ func TestDepositService_Create_Success_SetsPlayerNameSnapshot(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	assert.Equal(t, "alice", rec.PlayerName)
+	assert.Equal(t, "Alice 暱稱", rec.PlayerName)
 	assert.Equal(t, model.DepositStatusPending, rec.Status)
 }
 

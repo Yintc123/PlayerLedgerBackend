@@ -38,8 +38,8 @@
   狀態變更走 `status` 欄位，確保帳務歷史可稽核。
 - **金融不可刪除**：`deposit_records` **不設 `deleted_at`**，與 `cms_users`、`members` 的軟刪除模式不同。
   `cancelled` 是唯一的作廢路徑；帳務紀錄永久保存，確保對帳完整性。實作者不應仿照其他表加入軟刪除。
-- **快照反正規化**：`player_name` 由 **server 建立時自動從 `members` 表讀取**，儲存儲值當下的快照；
-  caller 不得自行提供，防止偽造。
+- **快照反正規化**：`player_name` 由 **server 建立時自動從 `members.display_name`（顯示暱稱）讀取**，儲存儲值當下的快照；
+  caller 不得自行提供，防止偽造。採 `display_name` 而非 `username`（登入帳號），對齊 players-model §6「username 不外露、前端以 display_name 呈現」。
 - **最小單位金額**：`amount` 以 `BIGINT` 儲存，單位為**該幣別的最小單位**：
   TWD → 元（1000 元 = 1000），USD → cents（$10.50 = 1050），JPY → 円（500 円 = 500）。
   `currency` 欄位決定如何解讀 `amount`；新增幣別時需同步更新 `currency` CHECK 約束。
@@ -116,7 +116,7 @@ CREATE TABLE deposit_records (
 |---|---|---|---|
 | `id` | UUID | PK, default gen | 紀錄唯一識別碼 |
 | `player_id` | UUID | NOT NULL, FK → members, ON DELETE RESTRICT | 玩家代號；限制玩家刪除，保留帳務紀錄 |
-| `player_name` | VARCHAR(64) | NOT NULL | 儲值當下快照；server 建立時自動從 members.username 填入 |
+| `player_name` | VARCHAR(64) | NOT NULL | 儲值當下快照；server 建立時自動從 members.display_name（顯示暱稱）填入 |
 | `amount` | BIGINT | NOT NULL, > 0 | 儲值金額，單位為幣別最小單位（見 §1） |
 | `currency` | CHAR(3) | NOT NULL, CHECK whitelist | ISO 4217 幣別代碼；擴充時更新 CHECK 約束 |
 | `status` | deposit_status | NOT NULL | 處理狀態；見 §4 狀態機 |

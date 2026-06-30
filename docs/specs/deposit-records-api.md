@@ -43,7 +43,7 @@
   PATCH endpoint 僅接受 `status`、`internal_note`、`display_note`。
 - **狀態轉換強制**：非法 status 轉換在 service 層以 `model.CanTransition` 驗證，回傳 `422 invalid_transition`。
 - **備註覆蓋語意**：PATCH 更新備註為**覆蓋**（replace）；歷史備註由 audit log 保存，不在 DB 追加。
-- **server 自動填入欄位**：`player_name`（從 members 查）、`operator_id`（從 token）、`operator_ip`
+- **server 自動填入欄位**：`player_name`（從 members.display_name 查）、`operator_id`（從 token）、`operator_ip`
   （從 HTTP request via `c.ClientIP()`）均由 server 填入，caller 無法指定，防止偽造。
 - **路由前綴**：所有端點統一無版本號（v1.6 起移除 `/api/v1`）。
   - CMS 管理端：`/api/cms/`
@@ -110,7 +110,7 @@
 
 | 欄位 | 來源 |
 |---|---|
-| `player_name` | 從 `members.username` 查詢（驗證 player_id 存在後） |
+| `player_name` | 從 `members.display_name`（顯示暱稱）查詢（驗證 player_id 存在後）；非 `username` 登入帳號 |
 | `operator_id` | access token `claims.sub` |
 | `operator_ip` | `c.ClientIP()`（見 §7 信任模型說明） |
 | `status` | 固定 `pending` |

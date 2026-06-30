@@ -75,7 +75,7 @@ func (s *depositService) Create(ctx context.Context, input CreateDepositInput) (
 	operatorID := input.OperatorID
 	rec := &model.DepositRecord{
 		PlayerID:      input.PlayerID,
-		PlayerName:    member.Username,
+		PlayerName:    member.DisplayName, // 快照玩家顯示暱稱（非 username 登入帳號），對齊 players-model §6
 		Amount:        input.Amount,
 		Currency:      input.Currency,
 		Status:        model.DepositStatusPending,
