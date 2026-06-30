@@ -159,3 +159,29 @@ func (h *PlayerHandler) Get(c *gin.Context) {
 	mask := claims.Role == jwt.RoleViewer
 	c.JSON(http.StatusOK, OK(c, dto.FromMember(member, mask)))
 }
+
+// ─── GET /api/cms/players/:id/deposit-summary ─────────────────────────────────
+
+func (h *PlayerHandler) DepositSummary(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		httpx.WriteError(c, http.StatusBadRequest, "invalid input")
+		return
+	}
+
+	claims, ok := jwt.GetClaims(c)
+	if !ok {
+		httpx.WriteError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	ctx := ctxkey.SetActor(c.Request.Context(), ctxkey.Actor{UserID: claims.UserID(), Role: string(claims.Role)})
+
+	// 彙總無 PII，全 CMS staff（含 viewer）皆回完整值，不遮罩。
+	out, err := h.svc.DepositSummary(ctx, id)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, OK(c, dto.FromDepositSummary(out)))
+}

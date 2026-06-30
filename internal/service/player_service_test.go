@@ -88,7 +88,7 @@ func TestPlayerService_Search_前綴條件_回傳符合玩家(t *testing.T) {
 		{Base: model.Base{ID: uuid.New(), CreatedAt: time.Now()}, DisplayName: "Alice"},
 		{Base: model.Base{ID: uuid.New(), CreatedAt: time.Now()}, DisplayName: "Bob"},
 	}}
-	svc := NewPlayerService(repo, audit.NewNopLogger())
+	svc := NewPlayerService(repo, repository.NewFakeDepositRecordRepository(), audit.NewNopLogger())
 
 	out, err := svc.Search(context.Background(), PlayerSearchInput{
 		DisplayName: strptr("Ali"),
@@ -102,7 +102,7 @@ func TestPlayerService_Search_前綴條件_回傳符合玩家(t *testing.T) {
 
 func TestPlayerService_Search_Keyset翻頁_不重不漏(t *testing.T) {
 	repo := seedMembers(5)
-	svc := NewPlayerService(repo, audit.NewNopLogger())
+	svc := NewPlayerService(repo, repository.NewFakeDepositRecordRepository(), audit.NewNopLogger())
 	ctx := context.Background()
 
 	seen := map[uuid.UUID]bool{}
@@ -127,7 +127,7 @@ func TestPlayerService_Search_Keyset翻頁_不重不漏(t *testing.T) {
 
 func TestPlayerService_Search_最後一頁_NextCursor為nil(t *testing.T) {
 	repo := seedMembers(2)
-	svc := NewPlayerService(repo, audit.NewNopLogger())
+	svc := NewPlayerService(repo, repository.NewFakeDepositRecordRepository(), audit.NewNopLogger())
 
 	out, err := svc.Search(context.Background(), PlayerSearchInput{DisplayName: strptr("Player"), Limit: 20})
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestPlayerService_Search_最後一頁_NextCursor為nil(t *testing.T) {
 
 func TestPlayerService_Search_有下一頁_NextCursor非nil(t *testing.T) {
 	repo := seedMembers(3)
-	svc := NewPlayerService(repo, audit.NewNopLogger())
+	svc := NewPlayerService(repo, repository.NewFakeDepositRecordRepository(), audit.NewNopLogger())
 
 	out, err := svc.Search(context.Background(), PlayerSearchInput{DisplayName: strptr("Player"), Limit: 2})
 	require.NoError(t, err)
@@ -147,7 +147,7 @@ func TestPlayerService_Search_有下一頁_NextCursor非nil(t *testing.T) {
 
 func TestPlayerService_Search_非法cursor_回ErrInvalidInput(t *testing.T) {
 	repo := seedMembers(1)
-	svc := NewPlayerService(repo, audit.NewNopLogger())
+	svc := NewPlayerService(repo, repository.NewFakeDepositRecordRepository(), audit.NewNopLogger())
 
 	bad := "!!!not-base64!!!"
 	_, err := svc.Search(context.Background(), PlayerSearchInput{DisplayName: strptr("Player"), Cursor: &bad, Limit: 20})
@@ -157,7 +157,7 @@ func TestPlayerService_Search_非法cursor_回ErrInvalidInput(t *testing.T) {
 func TestPlayerService_Search_寫players_search_audit(t *testing.T) {
 	repo := seedMembers(2)
 	cap := &captureAudit{}
-	svc := NewPlayerService(repo, cap)
+	svc := NewPlayerService(repo, repository.NewFakeDepositRecordRepository(), cap)
 
 	_, err := svc.Search(context.Background(), PlayerSearchInput{DisplayName: strptr("Player"), Limit: 20})
 	require.NoError(t, err)
@@ -172,7 +172,7 @@ func TestPlayerService_Get_存在_回玩家並寫audit(t *testing.T) {
 		{Base: model.Base{ID: id, CreatedAt: time.Now()}, DisplayName: "Alice"},
 	}}
 	cap := &captureAudit{}
-	svc := NewPlayerService(repo, cap)
+	svc := NewPlayerService(repo, repository.NewFakeDepositRecordRepository(), cap)
 
 	m, err := svc.Get(context.Background(), id)
 	require.NoError(t, err)
@@ -184,8 +184,101 @@ func TestPlayerService_Get_存在_回玩家並寫audit(t *testing.T) {
 
 func TestPlayerService_Get_不存在_回ErrNotFound(t *testing.T) {
 	repo := &fakePlayerRepo{}
-	svc := NewPlayerService(repo, audit.NewNopLogger())
+	svc := NewPlayerService(repo, repository.NewFakeDepositRecordRepository(), audit.NewNopLogger())
 
 	_, err := svc.Get(context.Background(), uuid.New())
 	assert.ErrorIs(t, err, apperr.ErrNotFound)
+}
+
+// ─── DepositSummary（players-deposit-summary-api §3/§7）──────────────────────
+
+type stubAggregator struct {
+	agg    repository.DepositAggregate
+	err    error
+	called bool
+}
+
+func (s *stubAggregator) AggregateByPlayer(_ context.Context, _ uuid.UUID) (repository.DepositAggregate, error) {
+	s.called = true
+	return s.agg, s.err
+}
+
+func TestPlayerService_DepositSummary_玩家不存在_回ErrNotFound不寫audit(t *testing.T) {
+	repo := &fakePlayerRepo{} // 無 member
+	agg := &stubAggregator{}
+	cap := &captureAudit{}
+	svc := NewPlayerService(repo, agg, cap)
+
+	_, err := svc.DepositSummary(context.Background(), uuid.New())
+	assert.ErrorIs(t, err, apperr.ErrNotFound)
+	assert.False(t, agg.called, "玩家不存在時不應呼叫聚合")
+	assert.Empty(t, cap.events, "玩家不存在時不應寫 audit")
+}
+
+func TestPlayerService_DepositSummary_退款率金額比四捨五入4位(t *testing.T) {
+	id := uuid.New()
+	repo := &fakePlayerRepo{members: []*model.Member{{Base: model.Base{ID: id, CreatedAt: time.Now()}}}}
+	agg := &stubAggregator{agg: repository.DepositAggregate{Totals: []repository.CurrencyAggregate{{
+		Currency: "TWD", CompletedCount: 12, CompletedAmount: 24800,
+		RefundedCount: 1, RefundedAmount: 1200, FailedCount: 2,
+	}}}}
+	svc := NewPlayerService(repo, agg, &captureAudit{})
+
+	out, err := svc.DepositSummary(context.Background(), id)
+	require.NoError(t, err)
+	require.Len(t, out.Totals, 1)
+	// 1200 / (24800+1200) = 0.046153… → 0.0462
+	assert.InDelta(t, 0.0462, out.Totals[0].RefundRate, 1e-9)
+}
+
+func TestPlayerService_DepositSummary_分母為零_退款率為0(t *testing.T) {
+	id := uuid.New()
+	repo := &fakePlayerRepo{members: []*model.Member{{Base: model.Base{ID: id}}}}
+	agg := &stubAggregator{agg: repository.DepositAggregate{Totals: []repository.CurrencyAggregate{{
+		Currency: "TWD", FailedCount: 3, // 無 completed / refunded
+	}}}}
+	svc := NewPlayerService(repo, agg, &captureAudit{})
+
+	out, err := svc.DepositSummary(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 0.0, out.Totals[0].RefundRate)
+}
+
+func TestPlayerService_DepositSummary_玩家存在無紀錄_空彙總(t *testing.T) {
+	id := uuid.New()
+	repo := &fakePlayerRepo{members: []*model.Member{{Base: model.Base{ID: id}}}}
+	agg := &stubAggregator{agg: repository.DepositAggregate{Totals: []repository.CurrencyAggregate{}}}
+	svc := NewPlayerService(repo, agg, &captureAudit{})
+
+	out, err := svc.DepositSummary(context.Background(), id)
+	require.NoError(t, err)
+	assert.Empty(t, out.Totals)
+	assert.Nil(t, out.FirstTopupAt)
+	assert.Nil(t, out.LastTopupAt)
+	assert.Nil(t, out.LifetimeDays)
+}
+
+func TestPlayerService_DepositSummary_成功_寫audit並透傳時間(t *testing.T) {
+	id := uuid.New()
+	first := time.Date(2026, 1, 4, 9, 0, 0, 0, time.UTC)
+	last := time.Date(2026, 6, 20, 3, 0, 0, 0, time.UTC)
+	days := 167
+	repo := &fakePlayerRepo{members: []*model.Member{{Base: model.Base{ID: id}}}}
+	agg := &stubAggregator{agg: repository.DepositAggregate{
+		Totals:       []repository.CurrencyAggregate{{Currency: "TWD", CompletedCount: 1, CompletedAmount: 1000}},
+		FirstTopupAt: &first, LastTopupAt: &last, LifetimeDays: &days,
+	}}
+	cap := &captureAudit{}
+	svc := NewPlayerService(repo, agg, cap)
+
+	out, err := svc.DepositSummary(context.Background(), id)
+	require.NoError(t, err)
+	require.NotNil(t, out.FirstTopupAt)
+	assert.Equal(t, first, *out.FirstTopupAt)
+	assert.Equal(t, last, *out.LastTopupAt)
+	require.NotNil(t, out.LifetimeDays)
+	assert.Equal(t, 167, *out.LifetimeDays)
+	require.Len(t, cap.events, 1)
+	assert.Equal(t, audit.EventPlayerDepositSummary, cap.events[0].Type)
+	assert.Equal(t, id.String(), cap.events[0].Extra["target_player_id"])
 }

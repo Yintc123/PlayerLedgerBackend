@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -233,4 +234,118 @@ func TestDepositRecordRepository_ListByPlayer_資料隔離(t *testing.T) {
 	for _, r := range records {
 		assert.Equal(t, playerA, r.PlayerID, "只應回傳 playerA 自己的紀錄")
 	}
+}
+
+// ─── AggregateByPlayer（players-deposit-summary-api §3/§4）────────────────────
+
+func TestDepositRecordRepository_AggregateByPlayer_分桶與生涯(t *testing.T) {
+	db := WithTx(t)
+	repo := NewDepositRecordRepository(db)
+	ctx := context.Background()
+	pid := seedMember(t, db, "agg-player")
+
+	mk := func(status model.DepositStatus, amount int64, created time.Time) {
+		rec := newDepositRecord(pid, status)
+		rec.Amount = amount
+		rec.CreatedAt = created
+		require.NoError(t, repo.Create(ctx, rec))
+	}
+	jan4 := time.Date(2026, 1, 4, 9, 0, 0, 0, time.UTC)
+	jun20 := time.Date(2026, 6, 20, 3, 0, 0, 0, time.UTC)
+	mk(model.DepositStatusCompleted, 10000, jan4)
+	mk(model.DepositStatusCompleted, 14800, time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+	mk(model.DepositStatusRefunded, 1200, jun20)
+	mk(model.DepositStatusFailed, 500, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC))
+	mk(model.DepositStatusPending, 999, time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC))   // 排除
+	mk(model.DepositStatusCancelled, 888, time.Date(2026, 2, 3, 0, 0, 0, 0, time.UTC)) // 排除
+
+	agg, err := repo.AggregateByPlayer(ctx, pid)
+	require.NoError(t, err)
+	require.Len(t, agg.Totals, 1)
+	tw := agg.Totals[0]
+	assert.Equal(t, "TWD", tw.Currency)
+	assert.Equal(t, int64(2), tw.CompletedCount)
+	assert.Equal(t, int64(24800), tw.CompletedAmount)
+	assert.Equal(t, int64(1), tw.RefundedCount)
+	assert.Equal(t, int64(1200), tw.RefundedAmount)
+	assert.Equal(t, int64(1), tw.FailedCount)
+	require.NotNil(t, agg.FirstTopupAt)
+	require.NotNil(t, agg.LastTopupAt)
+	assert.Equal(t, jan4.Unix(), agg.FirstTopupAt.Unix(), "首次取成功口徑 created_at 最小")
+	assert.Equal(t, jun20.Unix(), agg.LastTopupAt.Unix(), "末次取成功口徑 created_at 最大")
+	require.NotNil(t, agg.LifetimeDays)
+	assert.Equal(t, 167, *agg.LifetimeDays, "UTC 日曆日差 Jan4→Jun20 = 167")
+}
+
+func TestDepositRecordRepository_AggregateByPlayer_無紀錄_空彙總(t *testing.T) {
+	db := WithTx(t)
+	repo := NewDepositRecordRepository(db)
+	ctx := context.Background()
+	pid := seedMember(t, db, "agg-empty")
+
+	agg, err := repo.AggregateByPlayer(ctx, pid)
+	require.NoError(t, err)
+	assert.Empty(t, agg.Totals)
+	assert.Nil(t, agg.FirstTopupAt)
+	assert.Nil(t, agg.LastTopupAt)
+	assert.Nil(t, agg.LifetimeDays)
+}
+
+func TestDepositRecordRepository_AggregateByPlayer_僅失敗_無首末次(t *testing.T) {
+	db := WithTx(t)
+	repo := NewDepositRecordRepository(db)
+	ctx := context.Background()
+	pid := seedMember(t, db, "agg-failed")
+
+	rec := newDepositRecord(pid, model.DepositStatusFailed)
+	rec.Amount = 700
+	require.NoError(t, repo.Create(ctx, rec))
+
+	agg, err := repo.AggregateByPlayer(ctx, pid)
+	require.NoError(t, err)
+	require.Len(t, agg.Totals, 1)
+	assert.Equal(t, int64(1), agg.Totals[0].FailedCount)
+	assert.Equal(t, int64(0), agg.Totals[0].CompletedAmount)
+	assert.Nil(t, agg.FirstTopupAt, "僅失敗無成功口徑紀錄 → 首次 nil")
+	assert.Nil(t, agg.LifetimeDays)
+}
+
+func TestDepositRecordRepository_AggregateByPlayer_同日多筆_生涯0(t *testing.T) {
+	db := WithTx(t)
+	repo := NewDepositRecordRepository(db)
+	ctx := context.Background()
+	pid := seedMember(t, db, "agg-sameday")
+
+	day := time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
+	r1 := newDepositRecord(pid, model.DepositStatusCompleted)
+	r1.CreatedAt = day.Add(2 * time.Hour)
+	r2 := newDepositRecord(pid, model.DepositStatusCompleted)
+	r2.CreatedAt = day.Add(20 * time.Hour)
+	require.NoError(t, repo.Create(ctx, r1))
+	require.NoError(t, repo.Create(ctx, r2))
+
+	agg, err := repo.AggregateByPlayer(ctx, pid)
+	require.NoError(t, err)
+	require.NotNil(t, agg.LifetimeDays)
+	assert.Equal(t, 0, *agg.LifetimeDays, "同一 UTC 日期 → 生涯 0 天")
+}
+
+func TestDepositRecordRepository_AggregateByPlayer_僅查指定玩家(t *testing.T) {
+	db := WithTx(t)
+	repo := NewDepositRecordRepository(db)
+	ctx := context.Background()
+	pidA := seedMember(t, db, "agg-iso-a")
+	pidB := seedMember(t, db, "agg-iso-b")
+
+	a := newDepositRecord(pidA, model.DepositStatusCompleted)
+	a.Amount = 100
+	require.NoError(t, repo.Create(ctx, a))
+	b := newDepositRecord(pidB, model.DepositStatusCompleted)
+	b.Amount = 999
+	require.NoError(t, repo.Create(ctx, b))
+
+	agg, err := repo.AggregateByPlayer(ctx, pidA)
+	require.NoError(t, err)
+	require.Len(t, agg.Totals, 1)
+	assert.Equal(t, int64(100), agg.Totals[0].CompletedAmount, "不應混入其他玩家紀錄")
 }

@@ -43,6 +43,9 @@ const (
 	// players-api §9：玩家查詢操作事件（query 去敏，不記 PII 原值）。
 	EventPlayerSearch EventType = "players.search"
 	EventPlayerRead   EventType = "players.read"
+
+	// players-deposit-summary-api §8：財務聚合讀取事件（僅記識別碼，不記金額明細）。
+	EventPlayerDepositSummary EventType = "players.deposit_summary"
 )
 
 // AuthEvent 安全事件的結構化內容（§18.3.2）。

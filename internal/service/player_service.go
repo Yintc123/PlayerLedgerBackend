@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,23 +34,53 @@ type PlayerSearchOutput struct {
 	NextCursor *string         // 最後一頁為 nil
 }
 
-// PlayerService 玩家查詢業務介面（players-api.md §6）。
+// CurrencyTotals 單一幣別彙總（含 service 以金額計算的 refund_rate）。
+type CurrencyTotals struct {
+	Currency        string
+	CompletedCount  int64
+	CompletedAmount int64
+	RefundedCount   int64
+	RefundedAmount  int64
+	FailedCount     int64
+	RefundRate      float64 // refunded/(completed+refunded)，0..1，四捨五入 4 位
+}
+
+// DepositSummaryOutput 玩家儲值彙總 service 輸出（players-deposit-summary-api.md §3）。
+type DepositSummaryOutput struct {
+	PlayerID     uuid.UUID
+	Totals       []CurrencyTotals // 依 currency ASC；無 → 空 slice
+	FirstTopupAt *time.Time
+	LastTopupAt  *time.Time
+	LifetimeDays *int
+}
+
+// depositAggregator 是 PlayerService 對儲值聚合的最小依賴（interface segregation）。
+// 由 repository.DepositRecordRepository 滿足。
+type depositAggregator interface {
+	AggregateByPlayer(ctx context.Context, playerID uuid.UUID) (repository.DepositAggregate, error)
+}
+
+// PlayerService 玩家查詢業務介面（players-api.md §6 / players-deposit-summary-api.md）。
 type PlayerService interface {
 	// Search 解碼 cursor → keyset，取 pageSize+1 判斷 hasMore，砍尾並編 NextCursor，寫 players.search audit。
 	// cursor 解碼失敗回 apperr.ErrInvalidInput。
 	Search(ctx context.Context, in PlayerSearchInput) (PlayerSearchOutput, error)
 	// Get 取玩家；不存在 / 已軟刪除回 apperr.ErrNotFound。寫 players.read audit。
 	Get(ctx context.Context, id uuid.UUID) (*model.Member, error)
+	// DepositSummary 取玩家儲值彙總；玩家不存在 / 已軟刪除回 apperr.ErrNotFound。
+	// 成功時寫 players.deposit_summary audit（僅識別碼，不記金額）。
+	DepositSummary(ctx context.Context, id uuid.UUID) (*DepositSummaryOutput, error)
 }
 
 type playerService struct {
-	memberRepo repository.MemberRepository
-	audit      audit.Logger
+	memberRepo  repository.MemberRepository
+	depositRepo depositAggregator
+	audit       audit.Logger
 }
 
 // NewPlayerService 建立玩家查詢服務。
-func NewPlayerService(memberRepo repository.MemberRepository, auditLogger audit.Logger) PlayerService {
-	return &playerService{memberRepo: memberRepo, audit: auditLogger}
+func NewPlayerService(memberRepo repository.MemberRepository, depositRepo depositAggregator, auditLogger audit.Logger) PlayerService {
+	return &playerService{memberRepo: memberRepo, depositRepo: depositRepo, audit: auditLogger}
 }
 
 func (s *playerService) Search(ctx context.Context, in PlayerSearchInput) (PlayerSearchOutput, error) {
@@ -118,6 +149,60 @@ func (s *playerService) Get(ctx context.Context, id uuid.UUID) (*model.Member, e
 	})
 
 	return member, nil
+}
+
+func (s *playerService) DepositSummary(ctx context.Context, id uuid.UUID) (*DepositSummaryOutput, error) {
+	// 玩家存在性（soft-delete-aware，同 GET /cms/players/{id}）；不存在 / 軟刪 → ErrNotFound。
+	if _, err := s.memberRepo.FindByID(ctx, id); err != nil {
+		return nil, err
+	}
+
+	agg, err := s.depositRepo.AggregateByPlayer(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate deposits: %w", err)
+	}
+
+	totals := make([]CurrencyTotals, 0, len(agg.Totals))
+	for _, a := range agg.Totals {
+		totals = append(totals, CurrencyTotals{
+			Currency:        a.Currency,
+			CompletedCount:  a.CompletedCount,
+			CompletedAmount: a.CompletedAmount,
+			RefundedCount:   a.RefundedCount,
+			RefundedAmount:  a.RefundedAmount,
+			FailedCount:     a.FailedCount,
+			RefundRate:      refundRate(a.CompletedAmount, a.RefundedAmount),
+		})
+	}
+
+	actor := ctxkey.ActorFrom(ctx)
+	s.audit.Log(ctx, audit.AuthEvent{
+		Type:   audit.EventPlayerDepositSummary,
+		UserID: actor.UserID,
+		Extra: map[string]any{
+			"role":             actor.Role,
+			"target_player_id": id.String(),
+		},
+	})
+
+	return &DepositSummaryOutput{
+		PlayerID:     id,
+		Totals:       totals,
+		FirstTopupAt: agg.FirstTopupAt,
+		LastTopupAt:  agg.LastTopupAt,
+		LifetimeDays: agg.LifetimeDays,
+	}, nil
+}
+
+// refundRate = refunded_amount / (completed_amount + refunded_amount)（金額比，§3.3）。
+// 分母為 0 → 0；四捨五入至小數 4 位（round half away from zero，math.Round 語意）。
+func refundRate(completedAmount, refundedAmount int64) float64 {
+	denom := completedAmount + refundedAmount
+	if denom == 0 {
+		return 0
+	}
+	r := float64(refundedAmount) / float64(denom)
+	return math.Round(r*10000) / 10000
 }
 
 // providedSearchFields 回報哪些搜尋欄位有提供（去敏，不含值），供 audit query 概要用。

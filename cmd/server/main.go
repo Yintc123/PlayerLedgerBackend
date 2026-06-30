@@ -173,7 +173,7 @@ func main() {
 	depositService := service.NewDepositService(depositRepo, memberRepo, auditLogger)
 	log.Info("deposit service initialized")
 
-	playerService := service.NewPlayerService(memberRepo, auditLogger)
+	playerService := service.NewPlayerService(memberRepo, depositRepo, auditLogger)
 	log.Info("player service initialized")
 
 	// CMS user 管理服務（cms-users-api §9）。
@@ -287,6 +287,8 @@ func main() {
 		// Players（players-api §3）。唯讀，全 CMS staff 可查；viewer 的 email/phone 由 handler 遮罩。
 		cmsGroup.GET("/players", playerHandler.Search)
 		cmsGroup.GET("/players/:id", playerHandler.Get)
+		// 玩家儲值彙總（players-deposit-summary-api）。唯讀，全 CMS staff；彙總無 PII 不遮罩。
+		cmsGroup.GET("/players/:id/deposit-summary", playerHandler.DepositSummary)
 
 		// CMS Users（cms-users-api §3）。/me 必須先於 /:id 註冊（§14）。
 		//   GET     讀 → 全 CMS staff；PATCH/DELETE :id → admin only；PATCH /me → 自己

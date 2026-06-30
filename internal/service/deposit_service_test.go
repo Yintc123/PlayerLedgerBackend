@@ -79,6 +79,10 @@ func (r *fakeDepositRepo) ListByPlayer(_ context.Context, playerID uuid.UUID, _ 
 	return result, int64(len(result)), nil
 }
 
+func (r *fakeDepositRepo) AggregateByPlayer(_ context.Context, _ uuid.UUID) (repository.DepositAggregate, error) {
+	return repository.DepositAggregate{Totals: []repository.CurrencyAggregate{}}, nil
+}
+
 type fakeMemberRepoDeposit struct {
 	members map[uuid.UUID]*model.Member
 }

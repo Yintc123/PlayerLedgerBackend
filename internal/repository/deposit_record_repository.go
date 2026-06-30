@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,6 +51,25 @@ type PlayerDepositFilter struct {
 	PageSize  int
 }
 
+// CurrencyAggregate 單一幣別的分桶統計（players-deposit-summary-api.md §3.1）。
+// 計數 / 金額依當前 status 互斥分桶；refund_rate 不在此層（由 service 以金額計算）。
+type CurrencyAggregate struct {
+	Currency        string
+	CompletedCount  int64
+	CompletedAmount int64
+	RefundedCount   int64
+	RefundedAmount  int64
+	FailedCount     int64
+}
+
+// DepositAggregate 玩家層級儲值彙總聚合結果（players-deposit-summary-api.md §3）。
+type DepositAggregate struct {
+	Totals       []CurrencyAggregate // 依 currency ASC；無可彙總紀錄 → 空 slice
+	FirstTopupAt *time.Time          // completed ∪ refunded 的 created_at 最小；無 → nil
+	LastTopupAt  *time.Time          // 同上最大；無 → nil
+	LifetimeDays *int                // UTC 日曆日差 DATE(last)-DATE(first)；無成功紀錄 → nil
+}
+
 // DepositRecordRepository 儲值紀錄倉儲介面。
 type DepositRecordRepository interface {
 	Create(ctx context.Context, r *model.DepositRecord) error
@@ -57,6 +78,19 @@ type DepositRecordRepository interface {
 	// Update 回傳更新後的 record，避免 handler 需要再查一次 DB。
 	Update(ctx context.Context, id uuid.UUID, input UpdateDepositInput) (*model.DepositRecord, error)
 	ListByPlayer(ctx context.Context, playerID uuid.UUID, f PlayerDepositFilter) ([]*model.DepositRecord, int64, error)
+	// AggregateByPlayer 聚合單一玩家的儲值統計（players-deposit-summary-api.md §3/§4）。
+	// 於唯讀 REPEATABLE READ 交易內跑兩條查詢，確保各幣別統計與首末次時間取自同一快照。
+	AggregateByPlayer(ctx context.Context, playerID uuid.UUID) (DepositAggregate, error)
+}
+
+// reportableStatuses 計入 totals_by_currency 的狀態；pending / cancelled 排除。
+var reportableStatuses = []model.DepositStatus{
+	model.DepositStatusCompleted, model.DepositStatusRefunded, model.DepositStatusFailed,
+}
+
+// successStatuses 計入首末次儲值 / 生涯天數的「成功口徑」狀態。
+var successStatuses = []model.DepositStatus{
+	model.DepositStatusCompleted, model.DepositStatusRefunded,
 }
 
 // depositSortMap 白名單映射，防止 SQL injection。
@@ -220,6 +254,58 @@ func (r *depositRecordRepository) ListByPlayer(ctx context.Context, playerID uui
 	return records, total, nil
 }
 
+func (r *depositRecordRepository) AggregateByPlayer(ctx context.Context, playerID uuid.UUID) (DepositAggregate, error) {
+	var agg DepositAggregate
+
+	// 唯讀 REPEATABLE READ 交易：兩條查詢取自同一快照（避免之間有寫入造成統計 / 時間不一致）。
+	txErr := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// (1) 各幣別分桶統計
+		var rows []CurrencyAggregate
+		if err := tx.Model(&model.DepositRecord{}).
+			Select(`currency,
+				COUNT(*) FILTER (WHERE status = 'completed')                 AS completed_count,
+				COALESCE(SUM(amount) FILTER (WHERE status = 'completed'), 0) AS completed_amount,
+				COUNT(*) FILTER (WHERE status = 'refunded')                  AS refunded_count,
+				COALESCE(SUM(amount) FILTER (WHERE status = 'refunded'), 0)  AS refunded_amount,
+				COUNT(*) FILTER (WHERE status = 'failed')                    AS failed_count`).
+			Where("player_id = ? AND status IN ?", playerID, reportableStatuses).
+			Group("currency").
+			Order("currency ASC").
+			Scan(&rows).Error; err != nil {
+			return err
+		}
+
+		// (2) 玩家層級首末次（成功口徑）＋ 生涯天數（UTC 日曆日差）
+		var timeRow struct {
+			FirstTopupAt *time.Time
+			LastTopupAt  *time.Time
+			LifetimeDays *int
+		}
+		if err := tx.Model(&model.DepositRecord{}).
+			Select(`MIN(created_at) AS first_topup_at,
+				MAX(created_at) AS last_topup_at,
+				(MAX(created_at) AT TIME ZONE 'UTC')::date - (MIN(created_at) AT TIME ZONE 'UTC')::date AS lifetime_days`).
+			Where("player_id = ? AND status IN ?", playerID, successStatuses).
+			Scan(&timeRow).Error; err != nil {
+			return err
+		}
+
+		agg.Totals = rows
+		agg.FirstTopupAt = timeRow.FirstTopupAt
+		agg.LastTopupAt = timeRow.LastTopupAt
+		agg.LifetimeDays = timeRow.LifetimeDays
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+
+	if txErr != nil {
+		return DepositAggregate{}, fmt.Errorf("aggregate deposits by player: %w", txErr)
+	}
+	if agg.Totals == nil {
+		agg.Totals = []CurrencyAggregate{}
+	}
+	return agg, nil
+}
+
 // ─── Fake ────────────────────────────────────────────────────────────────────
 
 // FakeDepositRecordRepository 用於測試的 in-memory 實現。
@@ -287,4 +373,71 @@ func (r *FakeDepositRecordRepository) ListByPlayer(_ context.Context, playerID u
 		}
 	}
 	return result, int64(len(result)), nil
+}
+
+func (r *FakeDepositRecordRepository) AggregateByPlayer(_ context.Context, playerID uuid.UUID) (DepositAggregate, error) {
+	byCurrency := map[string]*CurrencyAggregate{}
+	var firstAt, lastAt *time.Time
+
+	for _, rec := range r.records {
+		if rec.PlayerID != playerID {
+			continue
+		}
+		switch rec.Status {
+		case model.DepositStatusCompleted, model.DepositStatusRefunded, model.DepositStatusFailed:
+			ca := byCurrency[rec.Currency]
+			if ca == nil {
+				ca = &CurrencyAggregate{Currency: rec.Currency}
+				byCurrency[rec.Currency] = ca
+			}
+			switch rec.Status {
+			case model.DepositStatusCompleted:
+				ca.CompletedCount++
+				ca.CompletedAmount += rec.Amount
+			case model.DepositStatusRefunded:
+				ca.RefundedCount++
+				ca.RefundedAmount += rec.Amount
+			case model.DepositStatusFailed:
+				ca.FailedCount++
+			}
+		}
+		// 成功口徑（completed ∪ refunded）才計入首末次。
+		if rec.Status == model.DepositStatusCompleted || rec.Status == model.DepositStatusRefunded {
+			t := rec.CreatedAt
+			if firstAt == nil || t.Before(*firstAt) {
+				v := t
+				firstAt = &v
+			}
+			if lastAt == nil || t.After(*lastAt) {
+				v := t
+				lastAt = &v
+			}
+		}
+	}
+
+	currencies := make([]string, 0, len(byCurrency))
+	for c := range byCurrency {
+		currencies = append(currencies, c)
+	}
+	sort.Strings(currencies)
+	totals := make([]CurrencyAggregate, 0, len(currencies))
+	for _, c := range currencies {
+		totals = append(totals, *byCurrency[c])
+	}
+
+	agg := DepositAggregate{Totals: totals, FirstTopupAt: firstAt, LastTopupAt: lastAt}
+	if firstAt != nil && lastAt != nil {
+		days := utcCalendarDayDiff(*firstAt, *lastAt)
+		agg.LifetimeDays = &days
+	}
+	return agg, nil
+}
+
+// utcCalendarDayDiff 回傳 last 與 first 的 UTC 日曆日差（DATE(last)-DATE(first)），與真實 SQL 口徑一致。
+func utcCalendarDayDiff(first, last time.Time) int {
+	fy, fm, fd := first.UTC().Date()
+	ly, lm, ld := last.UTC().Date()
+	fDate := time.Date(fy, fm, fd, 0, 0, 0, 0, time.UTC)
+	lDate := time.Date(ly, lm, ld, 0, 0, 0, 0, time.UTC)
+	return int(lDate.Sub(fDate).Hours() / 24)
 }

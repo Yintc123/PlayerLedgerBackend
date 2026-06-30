@@ -23,11 +23,13 @@ import (
 // ─── Fake PlayerService ───────────────────────────────────────────────────────
 
 type fakePlayerService struct {
-	members   []*model.Member
-	out       service.PlayerSearchOutput
-	searchErr error
-	getErr    error
-	lastInput service.PlayerSearchInput
+	members    []*model.Member
+	out        service.PlayerSearchOutput
+	searchErr  error
+	getErr     error
+	lastInput  service.PlayerSearchInput
+	summaryOut *service.DepositSummaryOutput
+	summaryErr error
 }
 
 func (s *fakePlayerService) Search(_ context.Context, in service.PlayerSearchInput) (service.PlayerSearchOutput, error) {
@@ -48,6 +50,16 @@ func (s *fakePlayerService) Get(_ context.Context, id uuid.UUID) (*model.Member,
 		}
 	}
 	return nil, apperr.ErrNotFound
+}
+
+func (s *fakePlayerService) DepositSummary(_ context.Context, id uuid.UUID) (*service.DepositSummaryOutput, error) {
+	if s.summaryErr != nil {
+		return nil, s.summaryErr
+	}
+	if s.summaryOut != nil {
+		return s.summaryOut, nil
+	}
+	return &service.DepositSummaryOutput{PlayerID: id, Totals: []service.CurrencyTotals{}}, nil
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -71,6 +83,7 @@ func setupPlayerRouter(t *testing.T, svc service.PlayerService, role pkgjwt.Role
 	g := r.Group("/api/cms")
 	g.GET("/players", h.Search)
 	g.GET("/players/:id", h.Get)
+	g.GET("/players/:id/deposit-summary", h.DepositSummary)
 	return r
 }
 
@@ -262,4 +275,71 @@ func TestPlayerHandler_Search_Member_Returns403(t *testing.T) {
 
 	w := doRequest(r, http.MethodGet, "/api/cms/players?display_name=王", nil)
 	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// ─── DepositSummary（players-deposit-summary-api）────────────────────────────
+
+func TestPlayerHandler_DepositSummary_Success_Returns200NoMeta(t *testing.T) {
+	id := uuid.New()
+	svc := &fakePlayerService{summaryOut: &service.DepositSummaryOutput{
+		PlayerID: id,
+		Totals: []service.CurrencyTotals{{
+			Currency: "TWD", CompletedCount: 12, CompletedAmount: 24800,
+			RefundedCount: 1, RefundedAmount: 1200, FailedCount: 2, RefundRate: 0.0462,
+		}},
+	}}
+	r := setupPlayerRouter(t, svc, pkgjwt.RoleAdmin)
+
+	w := doRequest(r, http.MethodGet, "/api/cms/players/"+id.String()+"/deposit-summary", nil)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["success"])
+	_, hasMeta := resp["meta"]
+	assert.False(t, hasMeta, "彙總非分頁，回應不應含 meta")
+	data := resp["data"].(map[string]any)
+	totals := data["totals_by_currency"].([]any)
+	require.Len(t, totals, 1)
+	tw := totals[0].(map[string]any)
+	assert.Equal(t, "TWD", tw["currency"])
+	assert.Equal(t, float64(24800), tw["completed_amount"])
+	assert.InDelta(t, 0.0462, tw["refund_rate"], 1e-9)
+}
+
+func TestPlayerHandler_DepositSummary_InvalidUUID_Returns400(t *testing.T) {
+	svc := &fakePlayerService{}
+	r := setupPlayerRouter(t, svc, pkgjwt.RoleAdmin)
+
+	w := doRequest(r, http.MethodGet, "/api/cms/players/not-a-uuid/deposit-summary", nil)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestPlayerHandler_DepositSummary_NotFound_Returns404(t *testing.T) {
+	svc := &fakePlayerService{summaryErr: apperr.ErrNotFound}
+	r := setupPlayerRouter(t, svc, pkgjwt.RoleAdmin)
+
+	w := doRequest(r, http.MethodGet, "/api/cms/players/"+uuid.New().String()+"/deposit-summary", nil)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestPlayerHandler_DepositSummary_Viewer_Returns200不遮罩(t *testing.T) {
+	id := uuid.New()
+	svc := &fakePlayerService{summaryOut: &service.DepositSummaryOutput{PlayerID: id, Totals: []service.CurrencyTotals{}}}
+	r := setupPlayerRouter(t, svc, pkgjwt.RoleViewer)
+
+	w := doRequest(r, http.MethodGet, "/api/cms/players/"+id.String()+"/deposit-summary", nil)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestPlayerHandler_DepositSummary_空彙總_序列化為陣列與null(t *testing.T) {
+	id := uuid.New()
+	svc := &fakePlayerService{summaryOut: &service.DepositSummaryOutput{PlayerID: id, Totals: []service.CurrencyTotals{}}}
+	r := setupPlayerRouter(t, svc, pkgjwt.RoleAdmin)
+
+	w := doRequest(r, http.MethodGet, "/api/cms/players/"+id.String()+"/deposit-summary", nil)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"totals_by_currency":[]`)
+	assert.Contains(t, w.Body.String(), `"first_topup_at":null`)
+	assert.Contains(t, w.Body.String(), `"lifetime_days":null`)
 }
