@@ -548,6 +548,60 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
+  /cms/players/{id}/deposit-summary:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 玩家 id（= members.id）
+    get:
+      tags: [players, deposit-records]
+      summary: 取玩家儲值彙總（全 CMS staff）
+      description: |
+        聚合該玩家於 `deposit_records` 的所有紀錄，回傳各幣別的成功 / 退款 / 失敗統計、
+        退款率，以及首末次儲值時間與儲值生涯天數。唯讀；非分頁（無 `meta`）。
+        彙總**不含 PII**（僅金額與計數），故 viewer 亦回完整值、不遮罩。
+        玩家可見性與 `GET /cms/players/{id}` 一致：軟刪除 / 不存在 → 404。
+
+        聚合語意（完整定義見 players-deposit-summary-api.md）：
+        - 依 `currency` 分組，僅列出含 completed / refunded / failed 紀錄的幣別，依 currency ASC 排序
+        - `completed_*` / `refunded_*` / `failed_*` 依**當前 status** 分桶（互斥）；pending / cancelled 不計入
+        - `refund_rate` = `refunded_amount / (completed_amount + refunded_amount)`；分母為 0 → `0`
+        - `first_topup_at` / `last_topup_at` 取 completed ∪ refunded 紀錄的 `created_at` 最小 / 最大；無 → `null`
+        - `lifetime_days` = `DATE(last_topup_at) − DATE(first_topup_at)`（UTC 日曆日差，同日 → 0）；無成功紀錄 → `null`
+        - 玩家存在但無任何可彙總紀錄 → `200`，`totals_by_currency: []` 且時間欄位皆 `null`
+      operationId: getPlayerDepositSummary
+      responses:
+        '200':
+          description: 查詢成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlayerDepositSummaryEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: player_id 不存在於 members 表（含軟刪除）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                not_found:
+                  value:
+                    success: false
+                    request_id: 0193b3f4-1234-7abc-9def-0123456789ab
+                    error: resource not found
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
   # =============================================================
   # CMS Users — 內部人員管理（cms-users-api.md）
   # 權限：utype == cms。GET 全 CMS staff；PATCH/DELETE :id 限 admin；PATCH /me 自己。
@@ -1136,6 +1190,66 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/PlayerSearchResult'
+
+    # ---- 玩家儲值彙總（players-deposit-summary-api.md）----
+    CurrencyTotals:
+      type: object
+      description: 單一幣別的儲值統計。金額為該幣別最小單位整數加總。
+      required: [currency, completed_count, completed_amount, refunded_count, refunded_amount, failed_count, refund_rate]
+      properties:
+        currency:         { type: string, description: "ISO 4217 三字母；目前 DB CHECK 僅 TWD" }
+        completed_count:  { type: integer, format: int64, minimum: 0, description: "status=completed 筆數" }
+        completed_amount: { type: integer, format: int64, minimum: 0, description: "status=completed 金額加總（最小貨幣單位）" }
+        refunded_count:   { type: integer, format: int64, minimum: 0, description: "status=refunded 筆數" }
+        refunded_amount:  { type: integer, format: int64, minimum: 0, description: "status=refunded 金額加總" }
+        failed_count:     { type: integer, format: int64, minimum: 0, description: "status=failed 筆數" }
+        refund_rate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: |
+            refunded_amount / (completed_amount + refunded_amount)；分母為 0 → 0。
+            後端算好回傳（避免前端浮點誤差），四捨五入至小數 4 位。
+      additionalProperties: false
+
+    PlayerDepositSummary:
+      type: object
+      description: |
+        玩家儲值彙總。依當前 status 分桶聚合 deposit_records；不含 PII。
+        欄位顯式輸出（含 null），不用 omitempty。
+      required: [player_id, totals_by_currency, first_topup_at, last_topup_at, lifetime_days]
+      properties:
+        player_id:
+          type: string
+          format: uuid
+          description: "= members.id"
+        totals_by_currency:
+          type: array
+          description: 每個含可彙總紀錄的幣別一筆，依 currency ASC；無 → []
+          items:
+            $ref: '#/components/schemas/CurrencyTotals'
+        first_topup_at:
+          type: [string, 'null']
+          format: date-time
+          description: "completed ∪ refunded 紀錄 created_at 最小值（RFC3339 UTC）；無 → null"
+        last_topup_at:
+          type: [string, 'null']
+          format: date-time
+          description: "completed ∪ refunded 紀錄 created_at 最大值；無 → null"
+        lifetime_days:
+          type: [integer, 'null']
+          minimum: 0
+          description: "UTC 日曆日差 DATE(last_topup_at)−DATE(first_topup_at)；同日 → 0；無成功紀錄 → null"
+      additionalProperties: false
+
+    PlayerDepositSummaryEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PlayerDepositSummary'
 
     # ---- 通用錯誤回應 ----
     ErrorResponse:
