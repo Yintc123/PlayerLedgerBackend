@@ -30,3 +30,6 @@ vendor/
 /server
 /seed
 /bin/
+
+# log
+server.log
