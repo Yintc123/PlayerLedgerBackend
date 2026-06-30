@@ -86,8 +86,8 @@ CREATE TABLE members (
 |---|---|---|---|
 | `external_id` | VARCHAR(64) | nullable, unique（partial）| 外部遊戲系統的玩家識別碼；搜尋採**精確比對** |
 | `display_name` | VARCHAR(64) | NOT NULL | 顯示暱稱；搜尋採**前綴模糊**（NFC 正規化）；migration 以 `username` 回填 |
-| `email` | VARCHAR(255) | nullable | PII；搜尋採**前綴比對**（lowercase）；API 對 viewer 遮罩 |
-| `phone` | VARCHAR(32) | nullable | E.164 格式；搜尋採**正規化後精確比對**；API 對 viewer 遮罩 |
+| `email` | VARCHAR(255) | nullable | PII；搜尋採**前綴比對**（lowercase）；API 對 user / viewer 遮罩（僅 admin 完整）|
+| `phone` | VARCHAR(32) | nullable | E.164 格式；搜尋採**正規化後精確比對**；API 對 user / viewer 遮罩（僅 admin 完整）|
 | `status` | member_status | NOT NULL, DEFAULT `active` | 帳號狀態；見 §2.1 |
 | `last_active_at` | TIMESTAMPTZ | nullable | 最後活動時間；本期恆為 NULL，待未來事件回填 |
 

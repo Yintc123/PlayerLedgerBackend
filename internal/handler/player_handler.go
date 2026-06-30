@@ -127,7 +127,7 @@ func (h *PlayerHandler) Search(c *gin.Context) {
 		return
 	}
 
-	mask := claims.Role == jwt.RoleViewer
+	mask := claims.Role != jwt.RoleAdmin
 	c.JSON(http.StatusOK, OK(c, dto.PlayerSearchResult{
 		Players:    dto.FromMemberList(out.Players, mask),
 		NextCursor: out.NextCursor,
@@ -156,7 +156,7 @@ func (h *PlayerHandler) Get(c *gin.Context) {
 		return
 	}
 
-	mask := claims.Role == jwt.RoleViewer
+	mask := claims.Role != jwt.RoleAdmin
 	c.JSON(http.StatusOK, OK(c, dto.FromMember(member, mask)))
 }
 

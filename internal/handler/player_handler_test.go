@@ -139,6 +139,20 @@ func TestPlayerHandler_Search_Viewer_遮罩EmailPhone(t *testing.T) {
 	assert.Equal(t, "EXT-1", p["external_id"])
 }
 
+func TestPlayerHandler_Search_User_遮罩EmailPhone(t *testing.T) {
+	svc := &fakePlayerService{out: service.PlayerSearchOutput{Players: []*model.Member{sampleMember()}}}
+	r := setupPlayerRouter(t, svc, pkgjwt.RoleUser)
+
+	w := doRequest(r, http.MethodGet, "/api/cms/players?display_name=王", nil)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	p := playersOf(resp)[0].(map[string]any)
+	assert.Equal(t, "w***@example.com", p["email"])
+	assert.Equal(t, "+886***5678", p["phone"])
+}
+
 func TestPlayerHandler_Search_Admin_不遮罩(t *testing.T) {
 	svc := &fakePlayerService{out: service.PlayerSearchOutput{Players: []*model.Member{sampleMember()}}}
 	r := setupPlayerRouter(t, svc, pkgjwt.RoleAdmin)
@@ -236,6 +250,20 @@ func TestPlayerHandler_Get_Viewer_遮罩(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "w***@example.com", resp["data"].(map[string]any)["email"])
+}
+
+func TestPlayerHandler_Get_User_遮罩(t *testing.T) {
+	m := sampleMember()
+	svc := &fakePlayerService{members: []*model.Member{m}}
+	r := setupPlayerRouter(t, svc, pkgjwt.RoleUser)
+
+	w := doRequest(r, http.MethodGet, "/api/cms/players/"+m.ID.String(), nil)
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data := resp["data"].(map[string]any)
+	assert.Equal(t, "w***@example.com", data["email"])
+	assert.Equal(t, "+886***5678", data["phone"])
 }
 
 func TestPlayerHandler_Get_NotFound_Returns404(t *testing.T) {

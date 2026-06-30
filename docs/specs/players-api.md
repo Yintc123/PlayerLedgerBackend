@@ -43,7 +43,7 @@
   > **前端對齊**：BFF 為透明 proxy（`app/api/[...path]/route.ts`），`lib/players/{search,get}.ts`
   > 目前為 mock，後端就緒後僅需將其內部 fetch 目標改為 `/api/cms/players`，呼叫端（Server/Client Component）不需改。
   > 此為單行改動，非阻塞；通知前端據此調整即可。
-- **PII 角色遮罩**：`email`、`phone` 對 `viewer` 角色遮罩，對 `admin` / `user` 回完整值
+- **PII 角色遮罩**：`email`、`phone` 對 `user` / `viewer` 角色遮罩，**僅 `admin` 回完整值**
   （見 §5）。遮罩在 handler 組裝 DTO 時依 token `claims.role` 套用。
 - **Cursor 分頁（keyset）**：搜尋採 opaque cursor（`cursor` / `next_cursor`），非 `page/page_size`
   （對齊前端契約）；底層為 keyset（`created_at, id`）以避免並發插入造成跨頁重複 / 漏列，
@@ -64,11 +64,11 @@
 
 | 動作 | admin | user | viewer | member（玩家）| 未登入 |
 |---|---|---|---|---|---|
-| `GET /api/cms/players` 搜尋 | ✅ | ✅ | ✅（遮罩 PII）| ❌ | ❌ |
-| `GET /api/cms/players/:id` 詳情 | ✅ | ✅ | ✅（遮罩 PII）| ❌ | ❌ |
+| `GET /api/cms/players` 搜尋 | ✅ | ✅（遮罩 PII）| ✅（遮罩 PII）| ❌ | ❌ |
+| `GET /api/cms/players/:id` 詳情 | ✅ | ✅（遮罩 PII）| ✅（遮罩 PII）| ❌ | ❌ |
 
 - 皆需 `Authorization: Bearer <access_token>`，`claims.utype == "cms"`；非 CMS 回 `403 forbidden`。
-- 三種 CMS 角色皆可查；差異僅在 `viewer` 的 `email` / `phone` 被遮罩（見 §5）。
+- 三種 CMS 角色皆可查；差異僅在 `user` / `viewer` 的 `email` / `phone` 被遮罩，**僅 `admin` 回完整值**（見 §5）。
 
 ---
 
@@ -158,7 +158,7 @@
 }
 ```
 
-> 上例 `email` / `phone` 為 `viewer` 視角（已遮罩）；`admin` / `user` 視角為完整值。
+> 上例 `email` / `phone` 為 `user` / `viewer` 視角（已遮罩）；僅 `admin` 視角為完整值。
 > `next_cursor` 為 null 表示最後一頁。此端點 **不含** `meta`（非 page 分頁）。
 
 **錯誤**：
@@ -172,7 +172,7 @@
 
 **Path 參數**：`id` UUID（玩家 `player_id`）。
 
-**回應**：`200 OK`，body 為 `Response<PlayerDTO>`（單筆，欄位同 §5 表；`viewer` 遮罩 PII）。
+**回應**：`200 OK`，body 為 `Response<PlayerDTO>`（單筆，欄位同 §5 表；`user` / `viewer` 遮罩 PII）。
 
 **錯誤**：
 - `400 invalid input` — `id` 非 UUID 格式
@@ -190,8 +190,8 @@ type PlayerDTO struct {
     PlayerID     string  `json:"player_id"`
     ExternalID   *string `json:"external_id"`              // 無值為 null
     DisplayName  string  `json:"display_name"`
-    Email        *string `json:"email"`                   // viewer 遮罩；無值為 null
-    Phone        *string `json:"phone"`                   // viewer 遮罩；無值為 null
+    Email        *string `json:"email"`                   // user / viewer 遮罩；無值為 null
+    Phone        *string `json:"phone"`                   // user / viewer 遮罩；無值為 null
     Status       string  `json:"status"`                  // active | frozen | closed
     RegisteredAt string  `json:"registered_at"`           // RFC 3339（= members.created_at）
     LastActiveAt *string `json:"last_active_at"`           // 本期恆為 null
@@ -208,18 +208,18 @@ type PlayerSearchResult struct {
 
 ### 5.2 角色遮罩規則
 
-於 handler 組裝 DTO 時，依 `claims.role` 套用；`admin` / `user` 不遮罩，`viewer` 遮罩。
+於 handler 組裝 DTO 時，依 `claims.role` 套用；**僅 `admin` 不遮罩，`user` / `viewer` 皆遮罩**。
 **僅 `email`、`phone` 兩欄遮罩**；`player_id` / `external_id` / `display_name` / `status` /
 `registered_at` / `last_active_at` 對所有 CMS 角色皆回完整值（不遮罩）。
 
-| 欄位 | viewer 遮罩格式 | 範例 | 規則 |
+| 欄位 | user / viewer 遮罩格式 | 範例 | 規則 |
 |---|---|---|---|
 | `email` | 本地部分保留首字 + `***`，保留 `@domain` | `wang@example.com` → `w***@example.com` | 本地長度 ≤ 1 或格式異常 → 整段 `***` |
 | `phone` | 保留前 4 碼 + `***` + 末 4 碼 | `+886912345678` → `+886***5678` | 長度 < 8 → 整段 `***` |
 
 - `null` 值不遮罩（仍為 `null`）。
 - 遮罩為**輸出層**處理；搜尋條件比對（§4.1）一律以**原始值**進行，
-  即 viewer 仍可用完整 email/phone 查詢，只是回傳被遮罩。
+  即 user / viewer 仍可用完整 email/phone 查詢，只是回傳被遮罩。
 - `phone` 遮罩假設儲存值為 canonical **E.164**（`+886912345678`）；非標準格式時遮罩規則
   退化為「整段 `***`」（見上表長度 < 8 規則），避免誤露。
 

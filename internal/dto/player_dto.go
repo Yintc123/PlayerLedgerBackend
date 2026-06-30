@@ -8,7 +8,7 @@ import (
 )
 
 // PlayerDTO 玩家查詢結果（players-api.md §5.1）。
-// email / phone 對 viewer 角色遮罩；欄位皆顯式輸出（含 null），不用 omitempty 以維持前端型別穩定。
+// email / phone 對 user / viewer 角色遮罩（僅 admin 完整）；欄位皆顯式輸出（含 null），不用 omitempty 以維持前端型別穩定。
 // 不暴露 username / password_hash。
 type PlayerDTO struct {
 	PlayerID     string  `json:"player_id"`
@@ -27,7 +27,7 @@ type PlayerSearchResult struct {
 	NextCursor *string     `json:"next_cursor"`
 }
 
-// FromMember 從 model 轉 PlayerDTO。mask=true 時遮罩 email / phone（viewer 視角）。
+// FromMember 從 model 轉 PlayerDTO。mask=true 時遮罩 email / phone（非 admin 視角）。
 // 僅 email / phone 受遮罩；其餘欄位對所有角色皆完整。
 func FromMember(m *model.Member, mask bool) PlayerDTO {
 	dto := PlayerDTO{
